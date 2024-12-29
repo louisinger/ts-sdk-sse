@@ -172,10 +172,36 @@ curl https://getnigiri.vulpem.com | bash
 ### Running Tests
 
 ```bash
+# Run all tests
+pnpm test
+
+# Run unit tests only
+pnpm test:unit
+
 # Run integration tests (requires nigiri)
 nigiri start --ark
-pnpm test
+pnpm test:setup      # Run setup script for integration tests
+pnpm test:integration
 nigiri stop --delete
+
+# Watch mode for development
+pnpm test:watch
+
+# Run tests with coverage
+pnpm test:coverage
+```
+
+### Releasing
+
+```bash
+# Release new version (will prompt for version patch, minor, major)
+pnpm release
+
+# You can test release process without making changes
+pnpm release:dry-run
+
+# Cleanup: checkout version commit and remove release branch
+pnpm release:cleanup
 ```
 
 ### Releasing
