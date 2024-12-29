@@ -50,7 +50,7 @@ export class Wallet implements IWallet {
             throw new Error("Invalid configured public key");
         }
 
-        // Setup ARK provider and derive offchain address if configured
+        // Setup Ark provider and derive offchain address if configured
         if (config.arkServerUrl && config.arkServerPublicKey) {
             this.arkProvider = new ArkProvider(
                 config.arkServerUrl,
@@ -94,7 +94,7 @@ export class Wallet implements IWallet {
             }),
         };
 
-        // Only include ARK-related fields if ARK provider is configured and address is available
+        // Only include Ark-related fields if Ark provider is configured and address is available
         if (this.arkProvider && this.offchainAddress) {
             addressInfo.offchain = this.offchainAddress;
             addressInfo.bip21 = BIP21.create({
@@ -117,7 +117,7 @@ export class Wallet implements IWallet {
             .reduce((sum, coin) => sum + coin.value, 0);
         const onchainTotal = onchainConfirmed + onchainUnconfirmed;
 
-        // Get offchain coins if ARK provider is configured
+        // Get offchain coins if Ark provider is configured
         let offchainSettled = 0;
         let offchainPending = 0;
         let offchainSwept = 0;
@@ -180,7 +180,7 @@ export class Wallet implements IWallet {
             throw new Error("Amount is below dust limit");
         }
 
-        // If ARK is configured and amount is suitable, send via offchain
+        // If Ark is configured and amount is suitable, send via offchain
         if (this.arkProvider && this.isOffchainSuitable(params)) {
             return this.sendOffchain(params);
         }
@@ -256,7 +256,7 @@ export class Wallet implements IWallet {
             !this.offchainAddress ||
             !this.offchainTapscript
         ) {
-            throw new Error("ARK provider not configured");
+            throw new Error("Ark provider not configured");
         }
 
         const virtualCoins = await this.getVirtualCoins();
@@ -340,7 +340,7 @@ export class Wallet implements IWallet {
         tx.sign(this.identity.privateKey(), undefined, new Uint8Array(32));
 
         const psbt = tx.toPSBT();
-        // Broadcast to ARK
+        // Broadcast to Ark
         return this.arkProvider.submitVirtualTx(base64.encode(psbt));
     }
 
@@ -366,7 +366,7 @@ export class Wallet implements IWallet {
         _address: string
     ): Promise<void> {
         if (!this.arkProvider) {
-            throw new Error("ARK provider not configured");
+            throw new Error("Ark provider not configured");
         }
 
         // TODO: Implement event subscription

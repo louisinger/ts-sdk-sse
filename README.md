@@ -1,6 +1,6 @@
-# ARK Wallet SDK
+# Ark Wallet SDK
 
-The ARK Wallet SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via ARK protocol.
+The Ark Wallet SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via Ark protocol.
 
 ## Requirements
 
@@ -23,12 +23,12 @@ import { InMemoryKey, Wallet } from '@arklabs/wallet-sdk'
 // Create a new in-memory key (or use an external signer)
 const identity = InMemoryKey.fromHex('your_private_key_hex')
 
-// Create a wallet with ARK support
+// Create a wallet with Ark support
 const wallet = new Wallet({
   network: 'testnet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
   identity: identity,
   esploraUrl: 'https://mempool.space/testnet/api', // Optional Esplora URL
-  // Optional ARK configuration
+  // Optional Ark configuration
   arkServerUrl: 'https://master.signet.arklabs.to',
   arkServerPublicKey: 'your_ark_server_public_key'
 })
@@ -36,7 +36,7 @@ const wallet = new Wallet({
 // Get wallet addresses
 const { onchain, offchain, bip21 } = wallet.getAddress()
 console.log('Bitcoin Address:', onchain)
-console.log('ARK Address:', offchain)
+console.log('Ark Address:', offchain)
 console.log('BIP21 URI:', bip21)
 ```
 
@@ -57,7 +57,7 @@ const txid = await wallet.sendOnchain({
   feeRate: 1
 })
 
-// Force off-chain transaction (requires ARK configuration)
+// Force off-chain transaction (requires Ark configuration)
 const txid = await wallet.sendOffchain({
   address: 'tark1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx',
   amount: 50000,
@@ -77,7 +77,7 @@ console.log('Onchain Total:', balance.onchain.total)
 console.log('Onchain Confirmed:', balance.onchain.confirmed)
 console.log('Onchain Unconfirmed:', balance.onchain.unconfirmed)
 
-// Offchain balances (if ARK is configured)
+// Offchain balances (if Ark is configured)
 console.log('Offchain Total:', balance.offchain.total)
 console.log('Offchain Settled:', balance.offchain.settled)
 console.log('Offchain Pending:', balance.offchain.pending)
@@ -90,7 +90,7 @@ console.log('Offchain Swept:', balance.offchain.swept)
 // Get on-chain UTXOs
 const coins = await wallet.getCoins()
 
-// Get off-chain virtual UTXOs (requires ARK configuration)
+// Get off-chain virtual UTXOs (requires Ark configuration)
 const virtualCoins = await wallet.getVirtualCoins()
 ```
 
@@ -122,9 +122,9 @@ interface WalletConfig {
   identity: Identity;
   /** Optional Esplora API URL */
   esploraUrl?: string;
-  /** ARK server URL (optional) */
+  /** Ark server URL (optional) */
   arkServerUrl?: string;
-  /** ARK server public key (optional) */
+  /** Ark server public key (optional) */
   arkServerPublicKey?: string;
 }
 ```

@@ -27,7 +27,7 @@ export class ArkAddress {
             case "tark":
                 return networks.testnet; // Both testnet and regtest use tark
             default:
-                throw new Error("Invalid ARK address format");
+                throw new Error("Invalid Ark address format");
         }
     }
 
