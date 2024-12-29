@@ -178,6 +178,20 @@ pnpm test
 nigiri stop --delete
 ```
 
+### Releasing
+
+
+```bash
+# Release new version (will prompt for version patch, minor, major)
+./scripts/release.sh 
+
+# You can test release process without making changes.
+./scripts/release.sh --dry-run 
+
+# Cleanup: checkout version commit and remove release branch
+./scripts/release.sh --cleanup
+```
+
 ## License
 
 MIT
