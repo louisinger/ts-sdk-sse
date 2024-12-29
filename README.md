@@ -10,7 +10,7 @@ The ARK Wallet SDK is a TypeScript library for building Bitcoin wallets with sup
 ## Installation
 
 ```bash
-pnpm add @arklabs/wallet-sdk
+npm install @arklabs/wallet-sdk
 ```
 
 ## Usage
@@ -155,6 +155,8 @@ class ExternalSigner {
 1. Install dependencies:
 ```bash
 pnpm install
+pnpm format
+pnpm lint
 ```
 
 2. Install nigiri for integration tests:
@@ -165,13 +167,10 @@ curl https://getnigiri.vulpem.com | bash
 ### Running Tests
 
 ```bash
-# Run unit tests
-pnpm test
-
 # Run integration tests (requires nigiri)
-nigiri start
-pnpm test:e2e
-nigiri stop
+nigiri start --ark
+pnpm test
+nigiri stop --delete
 ```
 
 ## License
