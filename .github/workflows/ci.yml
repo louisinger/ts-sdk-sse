@@ -45,6 +45,9 @@ jobs:
     - name: Run linter
       run: pnpm lint
 
+    - name: Run unit tests
+      run: pnpm test:unit
+
     - name: Run Nigiri
       uses: vulpemventures/nigiri-github-action@v1
       with:
@@ -55,8 +58,8 @@ jobs:
     - name: Run setup script
       run: node test/setup.js
 
-    - name: Run tests
-      run: pnpm test
+    - name: Run integration tests
+      run: pnpm test:integration
 
     - name: Check TypeScript compilation
       run: pnpm build 
