@@ -23,10 +23,10 @@ const wallet = new Wallet({
   network: 'testnet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
   identity: identity,
   // Esplora API, can be left empty mempool.space API will be used
-  esploraUrl: 'https://mempool.space/testnet/api', // Optional Esplora URL
+  esploraUrl: 'https://mutinynet.com/api', 
   // OPTIONAL Ark Server connection information
-  arkServerUrl: 'https://server.com',
-  arkServerPublicKey: '3'
+  arkServerUrl: 'https://master.mutinynet.arklabs.to ',
+  arkServerPublicKey: '02d45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6'
 })
 
 // Get wallet addresses
@@ -39,7 +39,7 @@ console.log('BIP21 URI:', bip21)
 ### Sending Bitcoin
 
 ```typescript
-// Send bitcoin (automatically chooses on-chain or off-chain based on amount)
+// Send bitcoin (automatically chooses on-chain or off-chain based on the address)
 const txid = await wallet.sendBitcoin({
   address: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx',
   amount: 50000,  // in satoshis
@@ -202,20 +202,6 @@ pnpm release:dry-run
 
 # Cleanup: checkout version commit and remove release branch
 pnpm release:cleanup
-```
-
-### Releasing
-
-
-```bash
-# Release new version (will prompt for version patch, minor, major)
-./scripts/release.sh 
-
-# You can test release process without making changes.
-./scripts/release.sh --dry-run 
-
-# Cleanup: checkout version commit and remove release branch
-./scripts/release.sh --cleanup
 ```
 
 ## License
