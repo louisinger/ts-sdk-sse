@@ -1,6 +1,7 @@
 # Ark Wallet SDK
-
 The Ark Wallet SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via Ark protocol.
+
+![v3](https://github.com/user-attachments/assets/bec6fd29-417d-46af-8216-709edc39d566)
 
 ## Installation
 
@@ -26,7 +27,7 @@ const wallet = new Wallet({
   esploraUrl: 'https://mutinynet.com/api', 
   // OPTIONAL Ark Server connection information
   arkServerUrl: 'https://master.mutinynet.arklabs.to ',
-  arkServerPublicKey: '02d45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6'
+  arkServerPublicKey: 'd45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6'
 })
 
 // Get wallet addresses
