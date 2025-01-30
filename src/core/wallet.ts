@@ -171,7 +171,10 @@ export class Wallet implements IWallet {
         return this.arkProvider.getVirtualCoins(address.offchain);
     }
 
-    async sendBitcoin(params: SendBitcoinParams): Promise<string> {
+    async sendBitcoin(
+        params: SendBitcoinParams,
+        zeroFee: boolean = true
+    ): Promise<string> {
         if (params.amount <= 0) {
             throw new Error("Amount must be positive");
         }
@@ -182,7 +185,7 @@ export class Wallet implements IWallet {
 
         // If Ark is configured and amount is suitable, send via offchain
         if (this.arkProvider && this.isOffchainSuitable(params)) {
-            return this.sendOffchain(params);
+            return this.sendOffchain(params, zeroFee);
         }
 
         // Otherwise, send via onchain
@@ -250,7 +253,10 @@ export class Wallet implements IWallet {
         return txid;
     }
 
-    async sendOffchain(params: SendBitcoinParams): Promise<string> {
+    async sendOffchain(
+        params: SendBitcoinParams,
+        zeroFee: boolean = true
+    ): Promise<string> {
         if (
             !this.arkProvider ||
             !this.offchainAddress ||
@@ -260,10 +266,10 @@ export class Wallet implements IWallet {
         }
 
         const virtualCoins = await this.getVirtualCoins();
-        const feeRate = params.feeRate || Wallet.FEE_RATE;
 
-        // Ensure fee is an integer by rounding up
-        const estimatedFee = Math.ceil(174 * feeRate);
+        const estimatedFee = zeroFee
+            ? 0
+            : Math.ceil(174 * (params.feeRate || Wallet.FEE_RATE));
         const totalNeeded = params.amount + estimatedFee;
 
         const selected = await selectVirtualCoins(virtualCoins, totalNeeded);
