@@ -21,12 +21,12 @@ const identity = InMemoryKey.fromHex('your_private_key_hex')
 
 // Create a wallet with Ark support
 const wallet = new Wallet({
-  network: 'testnet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
+  network: 'mutinynet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
   identity: identity,
   // Esplora API, can be left empty mempool.space API will be used
   esploraUrl: 'https://mutinynet.com/api', 
   // OPTIONAL Ark Server connection information
-  arkServerUrl: 'https://master.mutinynet.arklabs.to ',
+  arkServerUrl: 'https://master.mutinynet.arklabs.to',
   arkServerPublicKey: 'd45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6'
 })
 
