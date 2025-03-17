@@ -1,8 +1,6 @@
 import { base64, hex } from "@scure/base";
-import { sha256 } from "@noble/hashes/sha256";
 import * as btc from "@scure/btc-signer";
 import { TAP_LEAF_VERSION, tapLeafHash } from "@scure/btc-signer/payment";
-import { secp256k1 } from "@noble/curves/secp256k1";
 import { clearInterval, setInterval } from "timers";
 
 import { BIP21 } from "../utils/bip21";
@@ -27,18 +25,12 @@ import {
     VtxoInput,
     RestArkProvider,
 } from "../providers/ark";
-import { TreeSignerSession } from "./signingSession";
+import { SignerSession } from "./signingSession";
 import { buildForfeitTx } from "./forfeit";
 import { TxWeightEstimator } from "../utils/txSizeEstimator";
 import { validateConnectorsTree, validateVtxoTree } from "./tree/validation";
 import { TransactionOutput } from "@scure/btc-signer/psbt";
 import { Identity } from "./identity";
-
-const ZERO_32 = new Uint8Array([
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-]);
 
 export interface WalletConfig {
     network: NetworkName;
@@ -391,7 +383,7 @@ export class Wallet {
         }
 
         // Create transaction
-        const tx = new btc.Transaction();
+        let tx = new btc.Transaction();
 
         // Add inputs
         for (const input of selected.inputs) {
@@ -423,7 +415,7 @@ export class Wallet {
         }
 
         // Sign inputs and Finalize
-        tx.sign(this.identity.privateKey());
+        tx = await this.identity.sign(tx);
         tx.finalize();
 
         // Broadcast
@@ -456,7 +448,7 @@ export class Wallet {
             throw new Error("Insufficient funds");
         }
 
-        const tx = new btc.Transaction({
+        let tx = new btc.Transaction({
             allowUnknownOutputs: true,
             disableScriptCheck: true,
             allowUnknownInputs: true,
@@ -521,7 +513,7 @@ export class Wallet {
         }
 
         // Sign inputs
-        tx.sign(this.identity.privateKey(), undefined, new Uint8Array(32));
+        tx = await this.identity.sign(tx);
 
         const psbt = tx.toPSBT();
         // Broadcast to Ark
@@ -536,19 +528,18 @@ export class Wallet {
             throw new Error("Ark provider not configured");
         }
 
-        // generate a vtxo tree signing key
-        const vtxoTreeSigningKey = secp256k1.utils.randomPrivateKey();
-        const vtxoTreePublicKey = secp256k1.getPublicKey(vtxoTreeSigningKey);
-
         // register inputs
         const { requestId } =
             await this.arkProvider!.registerInputsForNextRound(params.inputs);
 
+        // session holds the state of the musig2 signing process of the vtxo tree
+        const session = this.identity.signerSession();
+
         // register outputs
-        await this.arkProvider!.registerOutputsForNextRound(
+        await this.arkProvider.registerOutputsForNextRound(
             requestId,
             params.outputs,
-            [hex.encode(vtxoTreePublicKey)]
+            [hex.encode(session.getPublicKey())]
         );
 
         // start pinging every seconds
@@ -566,10 +557,6 @@ export class Wallet {
         // listen to settlement events
         const settlementStream = this.arkProvider.getEventStream();
         let step: SettlementEventType | undefined;
-
-        // the signing session holds the state of the musig2 signing process of the vtxo tree
-        // it is created when the vtxo tree is received in Signing event
-        let signingSession: TreeSignerSession | undefined;
 
         const info = await this.arkProvider.getInfo();
 
@@ -602,10 +589,13 @@ export class Wallet {
                         continue;
                     }
                     stopPing();
-                    signingSession = await this.handleSettlementSigningEvent(
+                    if (!session) {
+                        throw new Error("Signing session not found");
+                    }
+                    await this.handleSettlementSigningEvent(
                         event,
                         sweepTapTreeRoot,
-                        vtxoTreeSigningKey
+                        session
                     );
                     break;
                 // the musig2 nonces of the vtxo tree transactions are generated
@@ -615,12 +605,12 @@ export class Wallet {
                         continue;
                     }
                     stopPing();
-                    if (!signingSession) {
+                    if (!session) {
                         throw new Error("Signing session not found");
                     }
                     await this.handleSettlementSigningNoncesGeneratedEvent(
                         event,
-                        signingSession
+                        session
                     );
                     break;
                 // the vtxo tree is signed, craft, sign and submit forfeit transactions
@@ -654,8 +644,8 @@ export class Wallet {
     private async handleSettlementSigningEvent(
         event: SigningStartEvent,
         sweepTapTreeRoot: Uint8Array,
-        vtxoTreeSigningKey: Uint8Array
-    ): Promise<TreeSignerSession> {
+        session: SignerSession
+    ) {
         const vtxoTree = event.unsignedVtxoTree;
         if (!this.arkProvider) {
             throw new Error("Ark provider not configured");
@@ -677,36 +667,29 @@ export class Wallet {
             throw new Error("Shared output not found");
         }
 
-        const signingSession = new TreeSignerSession(
-            vtxoTreeSigningKey,
-            vtxoTree,
-            sweepTapTreeRoot,
-            sharedOutput.amount
-        );
+        session.init(vtxoTree, sweepTapTreeRoot, sharedOutput.amount);
 
         await this.arkProvider.submitTreeNonces(
             event.id,
-            hex.encode(signingSession.publicKey),
-            signingSession.getNonces()
+            hex.encode(session.getPublicKey()),
+            session.getNonces()
         );
-
-        return signingSession;
     }
 
     private async handleSettlementSigningNoncesGeneratedEvent(
         event: SigningNoncesGeneratedEvent,
-        signingSession: TreeSignerSession
+        session: SignerSession
     ) {
         if (!this.arkProvider) {
             throw new Error("Ark provider not configured");
         }
 
-        signingSession.setAggregatedNonces(event.treeNonces);
-        const signatures = signingSession.sign();
+        session.setAggregatedNonces(event.treeNonces);
+        const signatures = session.sign();
 
         await this.arkProvider.submitTreeSignatures(
             event.id,
-            hex.encode(signingSession.publicKey),
+            hex.encode(session.getPublicKey()),
             signatures
         );
     }
@@ -731,7 +714,7 @@ export class Wallet {
         const signedForfeits: string[] = [];
 
         const vtxos = await this.getVirtualCoins();
-        const settlementPsbt = btc.Transaction.fromPSBT(
+        let settlementPsbt = btc.Transaction.fromPSBT(
             base64.decode(event.roundTx)
         );
         let hasBoardingUtxos = false;
@@ -753,6 +736,7 @@ export class Wallet {
             if (!vtxo) {
                 hasBoardingUtxos = true;
 
+                const inputIndexes: number[] = [];
                 for (let i = 0; i < settlementPsbt.inputsLength; i++) {
                     const settlementInput = settlementPsbt.getInput(i);
 
@@ -773,19 +757,12 @@ export class Wallet {
                     settlementPsbt.updateInput(i, {
                         tapLeafScript: [forfeitTapLeafScript],
                     });
-                    if (
-                        !settlementPsbt.signIdx(
-                            this.identity.privateKey(),
-                            i,
-                            undefined,
-                            ZERO_32
-                        )
-                    ) {
-                        throw new Error(
-                            "Unable to sign the settlement transaction. Check your private key"
-                        );
-                    }
+                    inputIndexes.push(i);
                 }
+                settlementPsbt = await this.identity.sign(
+                    settlementPsbt,
+                    inputIndexes
+                );
 
                 continue;
             }
@@ -843,7 +820,7 @@ export class Wallet {
                 throw new Error("Connector output not found");
             }
 
-            const forfeitTx = buildForfeitTx({
+            let forfeitTx = buildForfeitTx({
                 connectorInput: connectorOutpoint,
                 connectorAmount: connectorOutput.amount,
                 feeAmount: fees,
@@ -863,12 +840,8 @@ export class Wallet {
                 tapLeafScript: [forfeitTapLeafScript],
             });
 
-            forfeitTx.signIdx(
-                this.identity.privateKey(),
-                1,
-                undefined,
-                ZERO_32
-            );
+            // do not sign the connector input
+            forfeitTx = await this.identity.sign(forfeitTx, [1]);
 
             signedForfeits.push(base64.encode(forfeitTx.toPSBT()));
         }
@@ -879,21 +852,6 @@ export class Wallet {
                 ? base64.encode(settlementPsbt.toPSBT())
                 : undefined
         );
-    }
-
-    async signMessage(message: string): Promise<string> {
-        const messageHash = sha256(new TextEncoder().encode(message));
-        const signature = await this.identity.sign(messageHash);
-        return hex.encode(signature);
-    }
-
-    /* eslint-disable @typescript-eslint/no-unused-vars */
-    async verifyMessage(
-        _message: string,
-        _signature: string,
-        _address: string
-    ): Promise<boolean> {
-        throw new Error("Method not implemented.");
     }
 
     async subscribeToEvents(
