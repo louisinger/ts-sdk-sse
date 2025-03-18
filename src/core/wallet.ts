@@ -1,8 +1,9 @@
 import { base64, hex } from "@scure/base";
 import * as btc from "@scure/btc-signer";
 import { TAP_LEAF_VERSION, tapLeafHash } from "@scure/btc-signer/payment";
-import { clearInterval, setInterval } from "timers";
+import { TransactionOutput } from "@scure/btc-signer/psbt";
 
+import { vtxosToTxs } from "../utils/transactionHistory";
 import { BIP21 } from "../utils/bip21";
 import { ArkAddress } from "../core/address";
 import { checkSequenceVerifyScript, VtxoTapscript } from "../core/tapscript";
@@ -29,7 +30,6 @@ import { SignerSession } from "./signingSession";
 import { buildForfeitTx } from "./forfeit";
 import { TxWeightEstimator } from "../utils/txSizeEstimator";
 import { validateConnectorsTree, validateVtxoTree } from "./tree/validation";
-import { TransactionOutput } from "@scure/btc-signer/psbt";
 import { Identity } from "./identity";
 
 export interface WalletConfig {
@@ -124,6 +124,27 @@ export interface Coin extends Outpoint {
 
 export interface VirtualCoin extends Coin {
     virtualStatus: VirtualStatus;
+    spentBy?: string;
+    createdAt: Date;
+}
+
+export enum TxType {
+    TxSent = "SENT",
+    TxReceived = "RECEIVED",
+}
+
+export interface TxKey {
+    boardingTxid: string;
+    roundTxid: string;
+    redeemTxid: string;
+}
+
+export interface ArkTransaction {
+    key: TxKey;
+    type: TxType;
+    amount: number;
+    settled: boolean;
+    createdAt: number;
 }
 
 export class Wallet {
@@ -284,10 +305,10 @@ export class Wallet {
             return [];
         }
 
-        const virtualCoins = await this.arkProvider.getVirtualCoins(
+        const { spendableVtxos } = await this.arkProvider.getVirtualCoins(
             address.offchain.address
         );
-        return virtualCoins.map((vtxo) => ({
+        return spendableVtxos.map((vtxo) => ({
             ...vtxo,
             outpoint: {
                 txid: vtxo.txid,
@@ -311,7 +332,123 @@ export class Wallet {
             return [];
         }
 
-        return this.arkProvider.getVirtualCoins(address.offchain.address);
+        return this.arkProvider
+            .getVirtualCoins(address.offchain.address)
+            .then(({ spendableVtxos }) => spendableVtxos);
+    }
+
+    async getTransactionHistory(): Promise<ArkTransaction[]> {
+        if (!this.arkProvider) {
+            return [];
+        }
+
+        const { spendableVtxos, spentVtxos } =
+            await this.arkProvider.getVirtualCoins(
+                this.offchainAddress!.address
+            );
+        const { boardingTxs, roundsToIgnore } = await this.getBoardingTxs();
+
+        // convert VTXOs to offchain transactions
+        const offchainTxs = vtxosToTxs(
+            spendableVtxos,
+            spentVtxos,
+            roundsToIgnore
+        );
+
+        const txs = [...boardingTxs, ...offchainTxs];
+
+        // sort transactions by creation time in descending order (newest first)
+        txs.sort(
+            // place createdAt = 0 (unconfirmed txs) first, then descending
+            (a, b) => {
+                if (a.createdAt === 0) return -1;
+                if (b.createdAt === 0) return 1;
+                return b.createdAt - a.createdAt;
+            }
+        );
+
+        return txs;
+    }
+
+    private async getBoardingTxs(): Promise<{
+        boardingTxs: ArkTransaction[];
+        roundsToIgnore: Set<string>;
+    }> {
+        if (!this.boardingAddress || !this.boardingTapscript) {
+            return { boardingTxs: [], roundsToIgnore: new Set() };
+        }
+
+        const txs = await this.onchainProvider.getTransactions(
+            this.boardingAddress.address
+        );
+        const utxos: VirtualCoin[] = [];
+        const roundsToIgnore = new Set<string>();
+
+        for (const tx of txs) {
+            for (let i = 0; i < tx.vout.length; i++) {
+                const vout = tx.vout[i];
+                if (
+                    vout.scriptpubkey_address === this.boardingAddress.address
+                ) {
+                    const spentStatuses =
+                        await this.onchainProvider.getTxOutspends(tx.txid);
+                    const spentStatus = spentStatuses[i];
+
+                    if (spentStatus?.spent) {
+                        roundsToIgnore.add(spentStatus.txid);
+                    }
+
+                    utxos.push({
+                        txid: tx.txid,
+                        vout: i,
+                        value: Number(vout.value),
+                        status: {
+                            confirmed: tx.status.confirmed,
+                            block_time: tx.status.block_time,
+                        },
+                        virtualStatus: {
+                            state: spentStatus?.spent ? "swept" : "pending",
+                            batchTxID: spentStatus?.spent
+                                ? spentStatus.txid
+                                : undefined,
+                        },
+                        createdAt: tx.status.confirmed
+                            ? new Date(tx.status.block_time * 1000)
+                            : new Date(0),
+                    });
+                }
+            }
+        }
+
+        const unconfirmedTxs: ArkTransaction[] = [];
+        const confirmedTxs: ArkTransaction[] = [];
+
+        for (const utxo of utxos) {
+            const tx: ArkTransaction = {
+                key: {
+                    boardingTxid: utxo.txid,
+                    roundTxid: "",
+                    redeemTxid: "",
+                },
+                amount: utxo.value,
+                type: TxType.TxReceived,
+                settled: utxo.virtualStatus.state === "swept",
+                createdAt: utxo.status.block_time
+                    ? new Date(utxo.status.block_time * 1000).getTime()
+                    : 0,
+            };
+
+            if (!utxo.status.block_time) {
+                unconfirmedTxs.push(tx);
+            } else {
+                confirmedTxs.push(tx);
+            }
+        }
+
+        return {
+            boardingTxs: [...unconfirmedTxs, ...confirmedTxs],
+            roundsToIgnore,
+        };
     }
 
     async getBoardingUtxos(): Promise<SpendableVtxo[]> {
@@ -354,7 +491,7 @@ export class Wallet {
         }
 
         // If Ark is configured and amount is suitable, send via offchain
-        if (this.arkProvider && this.isOffchainSuitable(params)) {
+        if (this.arkProvider && this.isOffchainSuitable(params.address)) {
             return this.sendOffchain(params, zeroFee);
         }
 
@@ -362,10 +499,13 @@ export class Wallet {
         return this.sendOnchain(params);
     }
 
-    private isOffchainSuitable(params: SendBitcoinParams): boolean {
-        // TODO: Add proper logic to determine if transaction is suitable for offchain
-        // For now, just check if amount is greater than dust
-        return params.amount > Wallet.DUST_AMOUNT;
+    private isOffchainSuitable(address: string): boolean {
+        try {
+            ArkAddress.decode(address);
+            return true;
+        } catch (e) {
+            return false;
+        }
     }
 
     async sendOnchain(params: SendBitcoinParams): Promise<string> {
@@ -532,14 +672,23 @@ export class Wallet {
         const { requestId } =
             await this.arkProvider!.registerInputsForNextRound(params.inputs);
 
+        const hasOffchainOutputs = params.outputs.some((output) =>
+            this.isOffchainSuitable(output.address)
+        );
+
         // session holds the state of the musig2 signing process of the vtxo tree
-        const session = this.identity.signerSession();
+        let session: SignerSession | undefined;
+        const signingPublicKeys: string[] = [];
+        if (hasOffchainOutputs) {
+            session = this.identity.signerSession();
+            signingPublicKeys.push(hex.encode(session.getPublicKey()));
+        }
 
         // register outputs
         await this.arkProvider.registerOutputsForNextRound(
             requestId,
             params.outputs,
-            [hex.encode(session.getPublicKey())]
+            signingPublicKeys
         );
 
         // start pinging every seconds
@@ -557,6 +706,11 @@ export class Wallet {
         // listen to settlement events
         const settlementStream = this.arkProvider.getEventStream();
         let step: SettlementEventType | undefined;
+        if (!hasOffchainOutputs) {
+            // if there are no offchain outputs, we don't have to handle musig2 tree signatures
+            // we can directly advance to the finalization step
+            step = SettlementEventType.SigningNoncesGenerated;
+        }
 
         const info = await this.arkProvider.getInfo();
 
@@ -589,14 +743,16 @@ export class Wallet {
                         continue;
                     }
                     stopPing();
-                    if (!session) {
-                        throw new Error("Signing session not found");
+                    if (hasOffchainOutputs) {
+                        if (!session) {
+                            throw new Error("Signing session not found");
+                        }
+                        await this.handleSettlementSigningEvent(
+                            event,
+                            sweepTapTreeRoot,
+                            session
+                        );
                     }
-                    await this.handleSettlementSigningEvent(
-                        event,
-                        sweepTapTreeRoot,
-                        session
-                    );
                     break;
                 // the musig2 nonces of the vtxo tree transactions are generated
                 // the server expects now the partial musig2 signatures
@@ -605,13 +761,15 @@ export class Wallet {
                         continue;
                     }
                     stopPing();
-                    if (!session) {
-                        throw new Error("Signing session not found");
+                    if (hasOffchainOutputs) {
+                        if (!session) {
+                            throw new Error("Signing session not found");
+                        }
+                        await this.handleSettlementSigningNoncesGeneratedEvent(
+                            event,
+                            session
+                        );
                     }
-                    await this.handleSettlementSigningNoncesGeneratedEvent(
-                        event,
-                        session
-                    );
                     break;
                 // the vtxo tree is signed, craft, sign and submit forfeit transactions
                 // if any boarding utxos are involved, the settlement tx is also signed
