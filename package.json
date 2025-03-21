@@ -1,6 +1,6 @@
 {
   "name": "@arklabs/wallet-sdk",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Bitcoin wallet SDK with Taproot and Ark integration",
   "main": "./dist/index.js",
   "module": "./dist/esm/index.js",
