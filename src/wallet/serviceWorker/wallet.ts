@@ -5,14 +5,17 @@ import {
     SettleParams,
     AddressInfo,
     Coin,
-    SpendableVtxo,
     VirtualCoin,
     ArkTransaction,
     WalletConfig,
+    ExtendedCoin,
+    ExtendedVirtualCoin,
 } from "..";
 import { Request } from "./request";
 import { Response } from "./response";
 import { SettlementEvent } from "../../providers/ark";
+import { EncodedVtxoScript } from "../../script/base";
+import { TaprootLeaf } from "@scure/btc-signer/payment";
 
 // ServiceWorkerWallet is a wallet that uses a service worker as "backend" to handle the wallet logic
 export class ServiceWorkerWallet implements IWallet {
@@ -188,7 +191,7 @@ export class ServiceWorkerWallet implements IWallet {
         }
     }
 
-    async getVtxos(): Promise<(SpendableVtxo & VirtualCoin)[]> {
+    async getVtxos(): Promise<ExtendedVirtualCoin[]> {
         const message: Request.GetVtxos = {
             type: "GET_VTXOS",
         };
@@ -204,7 +207,7 @@ export class ServiceWorkerWallet implements IWallet {
         }
     }
 
-    async getBoardingUtxos(): Promise<(SpendableVtxo & Coin)[]> {
+    async getBoardingUtxos(): Promise<ExtendedCoin[]> {
         const message: Request.GetBoardingUtxos = {
             type: "GET_BOARDING_UTXOS",
         };

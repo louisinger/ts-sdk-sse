@@ -1,10 +1,10 @@
 import {
     WalletBalance,
     Coin,
-    SpendableVtxo,
     VirtualCoin,
     ArkTransaction,
     AddressInfo,
+    IWallet,
 } from "..";
 import { SettlementEvent } from "../../providers/ark";
 
@@ -137,14 +137,16 @@ export namespace Response {
     export interface Vtxos extends Base {
         type: "VTXOS";
         success: true;
-        vtxos: (SpendableVtxo & VirtualCoin)[];
+        vtxos: Awaited<ReturnType<IWallet["getVtxos"]>>;
     }
 
     export function isVtxos(response: Base): response is Vtxos {
         return response.type === "VTXOS" && response.success === true;
     }
 
-    export function vtxos(vtxos: (SpendableVtxo & VirtualCoin)[]): Vtxos {
+    export function vtxos(
+        vtxos: Awaited<ReturnType<IWallet["getVtxos"]>>
+    ): Vtxos {
         return {
             type: "VTXOS",
             success: true,
@@ -173,7 +175,7 @@ export namespace Response {
     export interface BoardingUtxos extends Base {
         type: "BOARDING_UTXOS";
         success: true;
-        boardingUtxos: (SpendableVtxo & Coin)[];
+        boardingUtxos: Awaited<ReturnType<IWallet["getBoardingUtxos"]>>;
     }
 
     export function isBoardingUtxos(response: Base): response is BoardingUtxos {
@@ -181,7 +183,7 @@ export namespace Response {
     }
 
     export function boardingUtxos(
-        boardingUtxos: (SpendableVtxo & Coin)[]
+        boardingUtxos: Awaited<ReturnType<IWallet["getBoardingUtxos"]>>
     ): BoardingUtxos {
         return {
             type: "BOARDING_UTXOS",
