@@ -6,7 +6,7 @@ The Ark Wallet SDK is a TypeScript library for building Bitcoin wallets with sup
 ## Installation
 
 ```bash
-npm install @arklabs/wallet-sdk
+npm install @arkade-os/sdk
 ```
 
 ## Usage
@@ -14,7 +14,7 @@ npm install @arklabs/wallet-sdk
 ### Creating a Wallet
 
 ```typescript
-import { InMemoryKey, Wallet } from '@arklabs/wallet-sdk'
+import { InMemoryKey, Wallet } from '@arkade-os/sdk'
 
 // Create a new in-memory key (or use an external signer)
 const identity = InMemoryKey.fromHex('your_private_key_hex')
@@ -98,7 +98,7 @@ console.log('History:', history)
 
 ```typescript
 // service-worker.ts
-import { Worker } from '@arklabs/wallet-sdk'
+import { Worker } from '@arkade-os/sdk'
 
 // Worker is a class handling the communication between the main thread and the service worker
 new Worker().start()
@@ -118,8 +118,8 @@ await wallet.init({
   // Esplora API, can be left empty mempool.space API will be used
   esploraUrl: 'https://mutinynet.com/api', 
   // OPTIONAL Ark Server connection information
-  arkServerUrl: 'https://master.mutinynet.arklabs.to',
-  arkServerPublicKey: 'd45fc69d4ff1f45cbba36ab1037261863c3a49c4910bc183ae975247358920b6'
+  arkServerUrl: 'https://mutinynet.arkade.sh',
+  arkServerPublicKey: 'fa73c6e4876ffb2dfc961d763cca9abc73d4b88efcb8f5e7ff92dc55e9aa553d'
 })
 ```
 

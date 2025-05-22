@@ -1,5 +1,5 @@
 {
-  "name": "@arklabs/wallet-sdk",
+  "name": "@arkade-os/sdk",
   "version": "0.0.15",
   "description": "Bitcoin wallet SDK with Taproot and Ark integration",
   "type": "module",
