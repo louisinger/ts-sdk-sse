@@ -1,7 +1,5 @@
-# Ark Wallet SDK
-The Ark Wallet SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via Ark protocol.
-
-![v3](https://github.com/user-attachments/assets/bec6fd29-417d-46af-8216-709edc39d566)
+# Arkade TypeScript SDK
+The Arkade SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via the Ark protocol.
 
 ## Installation
 
