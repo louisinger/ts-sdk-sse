@@ -1,22 +1,28 @@
 /// <reference lib="webworker" />
 declare const self: ServiceWorkerGlobalScope;
 
-import { InMemoryKey } from "../../identity/inMemoryKey";
-import { VtxoTaprootAddress } from "..";
+import { SingleKey } from "../../identity/singleKey";
+import { isSpendable, isSubdust } from "..";
 import { Wallet } from "../wallet";
 import { Request } from "./request";
 import { Response } from "./response";
 import { ArkProvider, RestArkProvider } from "../../providers/ark";
-import { DefaultVtxo } from "../../script/default";
 import { IndexedDBVtxoRepository } from "./db/vtxo/idb";
 import { VtxoRepository } from "./db/vtxo";
 import { vtxosToTxs } from "../../utils/transactionHistory";
+import { IndexerProvider, RestIndexerProvider } from "../../providers/indexer";
+import { base64, hex } from "@scure/base";
+import { DefaultVtxo } from "../../script/default";
+import { Transaction } from "@scure/btc-signer";
 
-// Worker is a class letting to interact with ServiceWorkerWallet from the client
-// it aims to be run in a service worker context
+/**
+ * Worker is a class letting to interact with ServiceWorkerWallet from the client
+ * it aims to be run in a service worker context
+ */
 export class Worker {
     private wallet: Wallet | undefined;
     private arkProvider: ArkProvider | undefined;
+    private indexerProvider: IndexerProvider | undefined;
     private vtxoSubscription: AbortController | undefined;
 
     constructor(
@@ -53,6 +59,7 @@ export class Worker {
         await this.vtxoRepository.close();
         this.wallet = undefined;
         this.arkProvider = undefined;
+        this.indexerProvider = undefined;
         this.vtxoSubscription = undefined;
     }
 
@@ -60,55 +67,61 @@ export class Worker {
         if (
             !this.wallet ||
             !this.arkProvider ||
+            !this.indexerProvider ||
             !this.wallet.offchainTapscript ||
             !this.wallet.boardingTapscript
         ) {
             return;
         }
         // subscribe to address updates
-        const addressInfo = await this.wallet.getAddressInfo();
-        if (!addressInfo.offchain) {
-            return;
-        }
-
         await this.vtxoRepository.open();
-
-        // set the initial vtxos state
-        const { spendableVtxos, spentVtxos } =
-            await this.arkProvider.getVirtualCoins(
-                addressInfo.offchain.address
-            );
 
         const encodedOffchainTapscript = this.wallet.offchainTapscript.encode();
         const forfeit = this.wallet.offchainTapscript.forfeit();
+        const exit = this.wallet.offchainTapscript.exit();
 
-        const vtxos = [...spendableVtxos, ...spentVtxos].map((vtxo) => ({
+        const script = hex.encode(this.wallet.offchainTapscript.pkScript);
+        // set the initial vtxos state
+        const response = await this.indexerProvider.getVtxos({
+            scripts: [script],
+        });
+        const vtxos = response.vtxos.map((vtxo) => ({
             ...vtxo,
-            tapLeafScript: forfeit,
-            scripts: encodedOffchainTapscript,
+            forfeitTapLeafScript: forfeit,
+            intentTapLeafScript: exit,
+            tapTree: encodedOffchainTapscript,
         }));
 
         await this.vtxoRepository.addOrUpdate(vtxos);
 
-        this.processVtxoSubscription(addressInfo.offchain);
+        this.processVtxoSubscription({
+            script,
+            vtxoScript: this.wallet.offchainTapscript,
+        });
     }
 
     private async processVtxoSubscription({
-        address,
-        scripts,
-    }: VtxoTaprootAddress) {
+        script,
+        vtxoScript,
+    }: {
+        script: string;
+        vtxoScript: DefaultVtxo.Script;
+    }) {
         try {
-            const addressScripts = [...scripts.exit, ...scripts.forfeit];
-            const vtxoScript = DefaultVtxo.Script.decode(addressScripts);
-            const tapLeafScript = vtxoScript.findLeaf(scripts.forfeit[0]);
+            const forfeitTapLeafScript = vtxoScript.forfeit();
+            const intentTapLeafScript = vtxoScript.exit();
 
             const abortController = new AbortController();
-            const subscription = this.arkProvider!.subscribeForAddress(
-                address,
+            const subscriptionId =
+                await this.indexerProvider!.subscribeForScripts([script]);
+            const subscription = this.indexerProvider!.getSubscription(
+                subscriptionId,
                 abortController.signal
             );
 
             this.vtxoSubscription = abortController;
+
+            const tapTree = vtxoScript.encode();
 
             for await (const update of subscription) {
                 const vtxos = [...update.newVtxos, ...update.spentVtxos];
@@ -118,8 +131,9 @@ export class Worker {
 
                 const extendedVtxos = vtxos.map((vtxo) => ({
                     ...vtxo,
-                    tapLeafScript,
-                    scripts: addressScripts,
+                    forfeitTapLeafScript,
+                    intentTapLeafScript,
+                    tapTree,
                 }));
 
                 await this.vtxoRepository.addOrUpdate(extendedVtxos);
@@ -150,10 +164,12 @@ export class Worker {
 
         try {
             this.arkProvider = new RestArkProvider(message.arkServerUrl);
+            this.indexerProvider = new RestIndexerProvider(
+                message.arkServerUrl
+            );
 
             this.wallet = await Wallet.create({
-                network: message.network,
-                identity: InMemoryKey.fromHex(message.privateKey),
+                identity: SingleKey.fromHex(message.privateKey),
                 arkServerUrl: message.arkServerUrl,
                 arkServerPublicKey: message.arkServerPublicKey,
             });
@@ -226,10 +242,7 @@ export class Worker {
         }
 
         try {
-            const txid = await this.wallet.sendBitcoin(
-                message.params,
-                message.zeroFee
-            );
+            const txid = await this.wallet.sendBitcoin(message.params);
             event.source?.postMessage(
                 Response.sendBitcoinSuccess(message.id, txid)
             );
@@ -262,10 +275,8 @@ export class Worker {
         }
 
         try {
-            const addresses = await this.wallet.getAddress();
-            event.source?.postMessage(
-                Response.addresses(message.id, addresses)
-            );
+            const address = await this.wallet.getAddress();
+            event.source?.postMessage(Response.address(message.id, address));
         } catch (error: unknown) {
             console.error("Error getting address:", error);
             const errorMessage =
@@ -276,14 +287,17 @@ export class Worker {
         }
     }
 
-    private async handleGetAddressInfo(event: ExtendableMessageEvent) {
+    private async handleGetBoardingAddress(event: ExtendableMessageEvent) {
         const message = event.data;
-        if (!Request.isGetAddressInfo(message)) {
-            console.error("Invalid GET_ADDRESS_INFO message format", message);
+        if (!Request.isGetBoardingAddress(message)) {
+            console.error(
+                "Invalid GET_BOARDING_ADDRESS message format",
+                message
+            );
             event.source?.postMessage(
                 Response.error(
                     message.id,
-                    "Invalid GET_ADDRESS_INFO message format"
+                    "Invalid GET_BOARDING_ADDRESS message format"
                 )
             );
             return;
@@ -298,12 +312,12 @@ export class Worker {
         }
 
         try {
-            const addressInfo = await this.wallet.getAddressInfo();
+            const address = await this.wallet.getBoardingAddress();
             event.source?.postMessage(
-                Response.addressInfo(message.id, addressInfo)
+                Response.boardingAddress(message.id, address)
             );
         } catch (error: unknown) {
-            console.error("Error getting address info:", error);
+            console.error("Error getting boarding address:", error);
             const errorMessage =
                 error instanceof Error
                     ? error.message
@@ -331,93 +345,60 @@ export class Worker {
         }
 
         try {
-            const coins = await this.wallet.getCoins();
-            const onchainConfirmed = coins
-                .filter((coin) => coin.status.confirmed)
-                .reduce((sum, coin) => sum + coin.value, 0);
-            const onchainUnconfirmed = coins
-                .filter((coin) => !coin.status.confirmed)
-                .reduce((sum, coin) => sum + coin.value, 0);
-            const onchainTotal = onchainConfirmed + onchainUnconfirmed;
+            const [boardingUtxos, spendableVtxos, sweptVtxos] =
+                await Promise.all([
+                    this.wallet.getBoardingUtxos(),
+                    this.vtxoRepository.getSpendableVtxos(),
+                    this.vtxoRepository.getSweptVtxos(),
+                ]);
 
-            const spendableVtxos =
-                await this.vtxoRepository.getSpendableVtxos();
-            const offchainSettledBalance = spendableVtxos.reduce(
-                (sum, vtxo) =>
-                    vtxo.virtualStatus.state === "settled"
-                        ? sum + vtxo.value
-                        : sum,
-                0
-            );
-            const offchainPendingBalance = spendableVtxos.reduce(
-                (sum, vtxo) =>
-                    vtxo.virtualStatus.state === "pending"
-                        ? sum + vtxo.value
-                        : sum,
-                0
-            );
-            const offchainSweptBalance = spendableVtxos.reduce(
-                (sum, vtxo) =>
-                    vtxo.virtualStatus.state === "swept"
-                        ? sum + vtxo.value
-                        : sum,
-                0
-            );
+            // boarding
+            let confirmed = 0;
+            let unconfirmed = 0;
+            for (const utxo of boardingUtxos) {
+                if (utxo.status.confirmed) {
+                    confirmed += utxo.value;
+                } else {
+                    unconfirmed += utxo.value;
+                }
+            }
 
-            const offchainTotal =
-                offchainSettledBalance +
-                offchainPendingBalance +
-                offchainSweptBalance;
+            // offchain
+            let settled = 0;
+            let preconfirmed = 0;
+            let recoverable = 0;
+            for (const vtxo of spendableVtxos) {
+                if (vtxo.virtualStatus.state === "settled") {
+                    settled += vtxo.value;
+                } else if (vtxo.virtualStatus.state === "preconfirmed") {
+                    preconfirmed += vtxo.value;
+                }
+            }
+            for (const vtxo of sweptVtxos) {
+                if (isSpendable(vtxo)) {
+                    recoverable += vtxo.value;
+                }
+            }
+
+            const totalBoarding = confirmed + unconfirmed;
+            const totalOffchain = settled + preconfirmed + recoverable;
 
             event.source?.postMessage(
                 Response.balance(message.id, {
-                    onchain: {
-                        confirmed: onchainConfirmed,
-                        unconfirmed: onchainUnconfirmed,
-                        total: onchainTotal,
+                    boarding: {
+                        confirmed,
+                        unconfirmed,
+                        total: totalBoarding,
                     },
-                    offchain: {
-                        swept: offchainSweptBalance,
-                        settled: offchainSettledBalance,
-                        pending: offchainPendingBalance,
-                        total: offchainTotal,
-                    },
-                    total: onchainTotal + offchainTotal,
+                    settled,
+                    preconfirmed,
+                    available: settled + preconfirmed,
+                    recoverable,
+                    total: totalBoarding + totalOffchain,
                 })
             );
         } catch (error: unknown) {
             console.error("Error getting balance:", error);
-            const errorMessage =
-                error instanceof Error
-                    ? error.message
-                    : "Unknown error occurred";
-            event.source?.postMessage(Response.error(message.id, errorMessage));
-        }
-    }
-
-    private async handleGetCoins(event: ExtendableMessageEvent) {
-        const message = event.data;
-        if (!Request.isGetCoins(message)) {
-            console.error("Invalid GET_COINS message format", message);
-            event.source?.postMessage(
-                Response.error(message.id, "Invalid GET_COINS message format")
-            );
-            return;
-        }
-
-        if (!this.wallet) {
-            console.error("Wallet not initialized");
-            event.source?.postMessage(
-                Response.error(message.id, "Wallet not initialized")
-            );
-            return;
-        }
-
-        try {
-            const coins = await this.wallet.getCoins();
-            event.source?.postMessage(Response.coins(message.id, coins));
-        } catch (error: unknown) {
-            console.error("Error getting coins:", error);
             const errorMessage =
                 error instanceof Error
                     ? error.message
@@ -445,7 +426,20 @@ export class Worker {
         }
 
         try {
-            const vtxos = await this.vtxoRepository.getSpendableVtxos();
+            let vtxos = await this.vtxoRepository.getSpendableVtxos();
+            if (!message.filter?.withRecoverable) {
+                if (!this.wallet) throw new Error("Wallet not initialized");
+                // exclude subdust is we don't want recoverable
+                vtxos = vtxos.filter(
+                    (v) => !isSubdust(v, this.wallet!.dustAmount!)
+                );
+            }
+
+            if (message.filter?.withRecoverable) {
+                // get also swept and spendable vtxos
+                const sweptVtxos = await this.vtxoRepository.getSweptVtxos();
+                vtxos.push(...sweptVtxos.filter(isSpendable));
+            }
             event.source?.postMessage(Response.vtxos(message.id, vtxos));
         } catch (error: unknown) {
             console.error("Error getting vtxos:", error);
@@ -518,7 +512,7 @@ export class Worker {
         }
 
         try {
-            const { boardingTxs, roundsToIgnore } =
+            const { boardingTxs, commitmentsToIgnore: roundsToIgnore } =
                 await this.wallet.getBoardingTxs();
 
             const { spendable, spent } =
@@ -567,12 +561,12 @@ export class Worker {
         );
     }
 
-    private async handleExit(event: ExtendableMessageEvent) {
+    private async handleSign(event: ExtendableMessageEvent) {
         const message = event.data;
-        if (!Request.isExit(message)) {
-            console.error("Invalid EXIT message format", message);
+        if (!Request.isSign(message)) {
+            console.error("Invalid SIGN message format", message);
             event.source?.postMessage(
-                Response.error(message.id, "Invalid EXIT message format")
+                Response.error(message.id, "Invalid SIGN message format")
             );
             return;
         }
@@ -586,10 +580,19 @@ export class Worker {
         }
 
         try {
-            await this.wallet.exit(message.outpoints);
-            event.source?.postMessage(Response.exitSuccess(message.id));
+            const tx = Transaction.fromPSBT(base64.decode(message.tx));
+            const signedTx = await this.wallet.identity.sign(
+                tx,
+                message.inputIndexes
+            );
+            event.source?.postMessage(
+                Response.signSuccess(
+                    message.id,
+                    base64.encode(signedTx.toPSBT())
+                )
+            );
         } catch (error: unknown) {
-            console.error("Error exiting:", error);
+            console.error("Error signing:", error);
             const errorMessage =
                 error instanceof Error
                     ? error.message
@@ -624,16 +627,12 @@ export class Worker {
                 await this.handleGetAddress(event);
                 break;
             }
-            case "GET_ADDRESS_INFO": {
-                await this.handleGetAddressInfo(event);
+            case "GET_BOARDING_ADDRESS": {
+                await this.handleGetBoardingAddress(event);
                 break;
             }
             case "GET_BALANCE": {
                 await this.handleGetBalance(event);
-                break;
-            }
-            case "GET_COINS": {
-                await this.handleGetCoins(event);
                 break;
             }
             case "GET_VTXOS": {
@@ -652,12 +651,12 @@ export class Worker {
                 await this.handleGetStatus(event);
                 break;
             }
-            case "EXIT": {
-                await this.handleExit(event);
-                break;
-            }
             case "CLEAR": {
                 await this.handleClear(event);
+                break;
+            }
+            case "SIGN": {
+                await this.handleSign(event);
                 break;
             }
             default:

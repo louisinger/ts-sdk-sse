@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, next-version ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, next-version ]
 
 jobs:
   test:
@@ -16,7 +16,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: '22'
 
     - name: Install pnpm
       uses: pnpm/action-setup@v2
@@ -51,23 +51,30 @@ jobs:
         use_liquid: false
         use_ln: false
 
+    - name: Build arkd master
+      run: pnpm run test:build-docker
+
     - name: Run arkd master
-      run: pnpm run test:up-master 
+      run: pnpm run test:up-docker
 
     - name: Run setup script
-      run: pnpm test:setup-master
+      run: pnpm test:setup-docker
 
     - name: Run integration tests
-      run: pnpm test:integration-master
+      run: pnpm test:integration-docker
 
     - name: Capture arkd logs
-      if: always()
+      if: failure()
       run: |
-        docker logs $(docker ps -q --filter name=arkd) > arkd.log || true
+        docker logs arkd > arkd.log || true
         if [ -f arkd.log ]; then
           echo "=== arkd logs ==="
           cat arkd.log
         fi
+
+    - name: Tear down arkd
+      run: pnpm run test:down-docker
+      if: always()
 
     - name: Check TypeScript compilation
       run: pnpm build 

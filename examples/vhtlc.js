@@ -10,18 +10,21 @@
 // node examples/vhtlc.js refund (alice and bob collaborate to spend the VHTLC)
 // node examples/vhtlc.js unilateralRefund (alice spends the VHTLC alone)
 //
-const {
-    InMemoryKey,
+import {
+    SingleKey,
     VHTLC,
-    addConditionWitness,
+    setArkPsbtField,
+    ConditionWitness,
     RestArkProvider,
-    createVirtualTx,
+    RestIndexerProvider,
+    buildOffchainTx,
     networks,
-} = require("../dist/index.js");
-const { hash160 } = require("@scure/btc-signer/utils");
-const { base64, hex } = require("@scure/base");
-const { utils } = require("@scure/btc-signer");
-const { execSync } = require("child_process");
+    CSVMultisigTapscript,
+} from "../dist/esm/index.js";
+import { hash160 } from "@scure/btc-signer/utils";
+import { base64, hex } from "@scure/base";
+import { utils, Transaction } from "@scure/btc-signer";
+import { execSync } from "child_process";
 
 const SERVER_PUBLIC_KEY = hex.decode(
     "8a9bbb1fb2aa92b9557dd0b39a85f31d204f58b41c62ea112d6ad148a9881285"
@@ -39,9 +42,9 @@ if (!action || !["claim", "refund", "unilateralRefund"].includes(action)) {
 
 // Alice is the vtxo owner, she offers the coin in exchange for the Bob's secret
 // to make the swap safe, she funds a VHTLC with Bob's public key as receiver
-const alice = InMemoryKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
+const alice = SingleKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
 // Bob is the receiver of the VHTLC, he is the one generating the secret
-const bob = InMemoryKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
+const bob = SingleKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
 
 const secret = Uint8Array.from("I'm bob secret");
 const preimageHash = hash160(secret);
@@ -88,15 +91,15 @@ async function main() {
         refundLocktime: BigInt(chainTip + 10), // 10 blocks from now
         unilateralClaimDelay: {
             type: "blocks",
-            value: 10n,
+            value: 100n,
         },
         unilateralRefundDelay: {
             type: "blocks",
-            value: 2n,
+            value: 102n,
         },
         unilateralRefundWithoutReceiverDelay: {
             type: "blocks",
-            value: 3n,
+            value: 103n,
         },
     });
 
@@ -112,13 +115,28 @@ async function main() {
 
     // Get the virtual coins for the VHTLC address
     const arkProvider = new RestArkProvider("http://localhost:7070");
-    const { spendableVtxos } = await arkProvider.getVirtualCoins(address);
+    const indexerProvider = new RestIndexerProvider("http://localhost:7070");
+    const spendableVtxos = await indexerProvider.getVtxos({
+        scripts: [hex.encode(vhtlcScript.pkScript)],
+        spendableOnly: true,
+    });
 
-    if (spendableVtxos.length === 0) {
+    if (spendableVtxos.vtxos.length === 0) {
         throw new Error("No spendable virtual coins found");
     }
 
-    const vtxo = spendableVtxos[0];
+    const vtxo = spendableVtxos.vtxos[0];
+
+    const infos = await arkProvider.getInfo();
+
+    // Create the server unroll script for checkpoint transactions
+    const serverUnrollScript = CSVMultisigTapscript.encode({
+        pubkeys: [SERVER_PUBLIC_KEY],
+        timelock: {
+            type: infos.unilateralExitDelay < 512 ? "blocks" : "seconds",
+            value: infos.unilateralExitDelay,
+        },
+    });
 
     switch (action) {
         case "claim": {
@@ -128,99 +146,155 @@ async function main() {
                 sign: async (tx, inputIndexes) => {
                     const cpy = tx.clone();
                     // reveal the secret in the PSBT, thus the server can verify the claim script
-                    addConditionWitness(0, cpy, [secret]);
+                    setArkPsbtField(cpy, 0, ConditionWitness, [secret]);
                     return bob.sign(cpy, inputIndexes);
                 },
                 xOnlyPublicKey: bob.xOnlyPublicKey,
                 signerSession: bob.signerSession,
             };
 
-            const tx = createVirtualTx(
+            const { arkTx, checkpoints } = buildOffchainTx(
                 [
                     {
                         ...vtxo,
                         tapLeafScript: vhtlcScript.claim(),
-                        scripts: vhtlcScript.encode(),
+                        tapTree: vhtlcScript.encode(),
                     },
                 ],
                 [
                     {
-                        address,
                         amount: BigInt(fundAmount),
+                        script: vhtlcScript.pkScript,
                     },
-                ]
+                ],
+                serverUnrollScript
             );
 
-            const signedTx = await bobVHTLCIdentity.sign(tx);
-            const txid = await arkProvider.submitVirtualTx(
-                base64.encode(signedTx.toPSBT())
+            const signedArkTx = await bobVHTLCIdentity.sign(arkTx);
+            const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
+                base64.encode(signedArkTx.toPSBT()),
+                checkpoints.map((c) => base64.encode(c.toPSBT()))
             );
 
-            console.log("Successfully claimed VHTLC! Transaction ID:", txid);
+            console.log(
+                "Successfully submitted VHTLC claim! Transaction ID:",
+                arkTxid
+            );
+
+            const finalCheckpoints = await Promise.all(
+                signedCheckpointTxs.map(async (c) => {
+                    const tx = Transaction.fromPSBT(base64.decode(c), {
+                        allowUnknown: true,
+                    });
+                    const signedCheckpoint = await bobVHTLCIdentity.sign(tx, [
+                        0,
+                    ]);
+                    return base64.encode(signedCheckpoint.toPSBT());
+                })
+            );
+
+            await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+            console.log("Successfully finalized VHTLC claim!");
             break;
         }
         case "refund": {
             // Create and sign the refund transaction
-            const tx = createVirtualTx(
+            const { arkTx, checkpoints } = buildOffchainTx(
                 [
                     {
                         ...vtxo,
                         tapLeafScript: vhtlcScript.refund(),
-                        scripts: vhtlcScript.encode(),
+                        tapTree: vhtlcScript.encode(),
                     },
                 ],
                 [
                     {
-                        address,
                         amount: BigInt(fundAmount),
+                        script: vhtlcScript.pkScript,
                     },
-                ]
+                ],
+                serverUnrollScript
             );
 
             // Alice signs the transaction
-            let signedTx = await alice.sign(tx);
+            let signedArkTx = await alice.sign(arkTx);
             // Bob signs the transaction
-            signedTx = await bob.sign(signedTx);
-            const txid = await arkProvider.submitVirtualTx(
-                base64.encode(signedTx.toPSBT())
+            signedArkTx = await bob.sign(signedArkTx);
+
+            const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
+                base64.encode(signedArkTx.toPSBT()),
+                checkpoints.map((c) => base64.encode(c.toPSBT()))
             );
 
-            console.log("Successfully refunded VHTLC! Transaction ID:", txid);
+            console.log(
+                "Successfully submitted VHTLC refund! Transaction ID:",
+                arkTxid
+            );
+
+            const finalCheckpoints = await Promise.all(
+                signedCheckpointTxs.map(async (c) => {
+                    const tx = Transaction.fromPSBT(base64.decode(c), {
+                        allowUnknown: true,
+                    });
+                    let signedCheckpoint = await alice.sign(tx, [0]);
+                    signedCheckpoint = await bob.sign(signedCheckpoint, [0]);
+                    return base64.encode(signedCheckpoint.toPSBT());
+                })
+            );
+
+            await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+            console.log("Successfully finalized VHTLC refund!");
             break;
         }
         case "unilateralRefund": {
-            // Generate 11 blocks to ensure the locktime period has passed
+            // Generate 200 blocks to ensure the locktime period has passed
             execSync(
-                `nigiri rpc generatetoaddress 11 $(nigiri rpc getnewaddress)`
+                `nigiri rpc generatetoaddress 200 $(nigiri rpc getnewaddress)`
             );
 
             // Create and sign the unilateral refund transaction
-            const tx = createVirtualTx(
+            const { arkTx, checkpoints } = buildOffchainTx(
                 [
                     {
                         ...vtxo,
                         tapLeafScript: vhtlcScript.refundWithoutReceiver(),
-                        scripts: vhtlcScript.encode(),
+                        tapTree: vhtlcScript.encode(),
                     },
                 ],
                 [
                     {
-                        address,
                         amount: BigInt(fundAmount),
+                        script: vhtlcScript.pkScript,
                     },
-                ]
+                ],
+                serverUnrollScript
             );
 
             // Alice signs the transaction alone
-            const signedTx = await alice.sign(tx);
-            const txid = await arkProvider.submitVirtualTx(
-                base64.encode(signedTx.toPSBT())
+            const signedArkTx = await alice.sign(arkTx);
+
+            const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
+                base64.encode(signedArkTx.toPSBT()),
+                checkpoints.map((c) => base64.encode(c.toPSBT()))
             );
 
             console.log(
-                "Successfully refunded VHTLC alone! Transaction ID:",
-                txid
+                "Successfully submitted VHTLC unilateral refund! Transaction ID:",
+                arkTxid
             );
+
+            const finalCheckpoints = await Promise.all(
+                signedCheckpointTxs.map(async (c) => {
+                    const tx = Transaction.fromPSBT(base64.decode(c), {
+                        allowUnknown: true,
+                    });
+                    const signedCheckpoint = await alice.sign(tx, [0]);
+                    return base64.encode(signedCheckpoint.toPSBT());
+                })
+            );
+
+            await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+            console.log("Successfully finalized VHTLC unilateral refund!");
             break;
         }
         default:

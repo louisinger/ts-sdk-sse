@@ -4,6 +4,15 @@ import { Script, ScriptNum, ScriptType } from "@scure/btc-signer/script";
 import { p2tr_ms } from "@scure/btc-signer/payment";
 import { hex } from "@scure/base";
 
+/**
+ * RelativeTimelock lets to create timelocked with CHECKSEQUENCEVERIFY script.
+ *
+ * @example
+ * ```typescript
+ * const timelock = { value: 144n, type: "blocks" }; // 1 day in blocks
+ * const timelock = { value: 512n, type: "seconds" }; // 8 minutes in seconds
+ * ```
+ */
 export type RelativeTimelock = {
     value: bigint;
     type: "seconds" | "blocks";
@@ -17,20 +26,29 @@ export enum TapscriptType {
     CLTVMultisig = "cltv-multisig",
 }
 
-export interface ArkTapscript<
-    T extends TapscriptType,
-    Params,
-    SizeArgs = never,
-> {
+/**
+ * ArkTapscript is the base element of vtxo scripts.
+ * It is used to encode and decode the different types of vtxo scripts.
+ */
+export interface ArkTapscript<T extends TapscriptType, Params> {
     type: T;
     params: Params;
     script: Uint8Array;
-    witnessSize(args: SizeArgs): number;
 }
 
+/**
+ * decodeTapscript is a function that decodes an ark tapsript from a raw script.
+ *
+ * @throws {Error} if the script is not a valid ark tapscript
+ * @example
+ * ```typescript
+ * const arkTapscript = decodeTapscript(new Uint8Array(32));
+ * console.log("type:", arkTapscript.type);
+ * ```
+ */
 export function decodeTapscript(
     script: Uint8Array
-): ArkTapscript<TapscriptType, any, any | undefined> {
+): ArkTapscript<TapscriptType, any> {
     const types = [
         MultisigTapscript,
         CSVMultisigTapscript,
@@ -53,8 +71,14 @@ export function decodeTapscript(
 }
 
 /**
- * Implements a multi-signature script that requires a threshold of signatures
- * from the specified pubkeys.
+ * Implements a multi-signature tapscript.
+ *
+ * <pubkey> CHECKSIGVERIFY <pubkey> CHECKSIG
+ *
+ * @example
+ * ```typescript
+ * const multisigTapscript = MultisigTapscript.encode({ pubkeys: [new Uint8Array(32), new Uint8Array(32)] });
+ * ```
  */
 export namespace MultisigTapscript {
     export type Type = ArkTapscript<TapscriptType.Multisig, Params>;
@@ -91,7 +115,6 @@ export namespace MultisigTapscript {
                 type: TapscriptType.Multisig,
                 params,
                 script: p2tr_ms(params.pubkeys.length, params.pubkeys).script,
-                witnessSize: () => params.pubkeys.length * 64,
             };
         }
 
@@ -111,7 +134,6 @@ export namespace MultisigTapscript {
             type: TapscriptType.Multisig,
             params,
             script: Script.encode(asm),
-            witnessSize: () => params.pubkeys.length * 64,
         };
     }
 
@@ -199,7 +221,6 @@ export namespace MultisigTapscript {
             type: TapscriptType.Multisig,
             params: { pubkeys, type: MultisigType.CHECKSIGADD },
             script,
-            witnessSize: () => pubkeys.length * 64,
         };
     }
 
@@ -259,7 +280,6 @@ export namespace MultisigTapscript {
             type: TapscriptType.Multisig,
             params: { pubkeys, type: MultisigType.CHECKSIG },
             script,
-            witnessSize: () => pubkeys.length * 64,
         };
     }
 
@@ -273,6 +293,13 @@ export namespace MultisigTapscript {
  * after the relative timelock has expired. The timelock can be specified in blocks or seconds.
  *
  * This is the standard exit closure and it is also used for the sweep closure in vtxo trees.
+ *
+ * <sequence> CHECKSEQUENCEVERIFY DROP <pubkey> CHECKSIG
+ *
+ * @example
+ * ```typescript
+ * const csvMultisigTapscript = CSVMultisigTapscript.encode({ timelock: { type: "blocks", value: 144 }, pubkeys: [new Uint8Array(32), new Uint8Array(32)] });
+ * ```
  */
 export namespace CSVMultisigTapscript {
     export type Type = ArkTapscript<TapscriptType.CSVMultisig, Params>;
@@ -311,7 +338,6 @@ export namespace CSVMultisigTapscript {
             type: TapscriptType.CSVMultisig,
             params,
             script,
-            witnessSize: () => params.pubkeys.length * 64,
         };
     }
 
@@ -374,7 +400,6 @@ export namespace CSVMultisigTapscript {
                 ...multisig.params,
             },
             script,
-            witnessSize: () => multisig.params.pubkeys.length * 64,
         };
     }
 
@@ -387,6 +412,13 @@ export namespace CSVMultisigTapscript {
  * Combines a condition script with an exit closure. The resulting script requires
  * the condition to be met, followed by the standard exit closure requirements
  * (timelock and signatures).
+ *
+ * <conditionScript> VERIFY <sequence> CHECKSEQUENCEVERIFY DROP <pubkey> CHECKSIGVERIFY <pubkey> CHECKSIG
+ *
+ * @example
+ * ```typescript
+ * const conditionCSVMultisigTapscript = ConditionCSVMultisigTapscript.encode({ conditionScript: new Uint8Array(32), pubkeys: [new Uint8Array(32), new Uint8Array(32)] });
+ * ```
  */
 export namespace ConditionCSVMultisigTapscript {
     export type Type = ArkTapscript<TapscriptType.ConditionCSVMultisig, Params>;
@@ -406,8 +438,6 @@ export namespace ConditionCSVMultisigTapscript {
             type: TapscriptType.ConditionCSVMultisig,
             params,
             script,
-            witnessSize: (conditionSize: number) =>
-                conditionSize + params.pubkeys.length * 64,
         };
     }
 
@@ -467,8 +497,6 @@ export namespace ConditionCSVMultisigTapscript {
                 ...csvMultisig.params,
             },
             script,
-            witnessSize: (conditionSize: number) =>
-                conditionSize + csvMultisig.params.pubkeys.length * 64,
         };
     }
 
@@ -481,6 +509,13 @@ export namespace ConditionCSVMultisigTapscript {
  * Combines a condition script with a forfeit closure. The resulting script requires
  * the condition to be met, followed by the standard forfeit closure requirements
  * (multi-signature).
+ *
+ * <conditionScript> VERIFY <pubkey> CHECKSIGVERIFY <pubkey> CHECKSIG
+ *
+ * @example
+ * ```typescript
+ * const conditionMultisigTapscript = ConditionMultisigTapscript.encode({ conditionScript: new Uint8Array(32), pubkeys: [new Uint8Array(32), new Uint8Array(32)] });
+ * ```
  */
 export namespace ConditionMultisigTapscript {
     export type Type = ArkTapscript<TapscriptType.ConditionMultisig, Params>;
@@ -500,8 +535,6 @@ export namespace ConditionMultisigTapscript {
             type: TapscriptType.ConditionMultisig,
             params,
             script,
-            witnessSize: (conditionSize: number) =>
-                conditionSize + params.pubkeys.length * 64,
         };
     }
 
@@ -561,8 +594,6 @@ export namespace ConditionMultisigTapscript {
                 ...multisig.params,
             },
             script,
-            witnessSize: (conditionSize: number) =>
-                conditionSize + multisig.params.pubkeys.length * 64,
         };
     }
 
@@ -575,6 +606,13 @@ export namespace ConditionMultisigTapscript {
  * Implements an absolute timelock (CLTV) script combined with a forfeit closure.
  * The script requires waiting until a specific block height/timestamp before the
  * forfeit closure conditions can be met.
+ *
+ * <locktime> CHECKLOCKTIMEVERIFY DROP <pubkey> CHECKSIGVERIFY <pubkey> CHECKSIG
+ *
+ * @example
+ * ```typescript
+ * const cltvMultisigTapscript = CLTVMultisigTapscript.encode({ absoluteTimelock: 144, pubkeys: [new Uint8Array(32), new Uint8Array(32)] });
+ * ```
  */
 export namespace CLTVMultisigTapscript {
     export type Type = ArkTapscript<TapscriptType.CLTVMultisig, Params>;
@@ -597,7 +635,6 @@ export namespace CLTVMultisigTapscript {
             type: TapscriptType.CLTVMultisig,
             params,
             script,
-            witnessSize: () => params.pubkeys.length * 64,
         };
     }
 
@@ -654,7 +691,6 @@ export namespace CLTVMultisigTapscript {
                 ...multisig.params,
             },
             script,
-            witnessSize: () => multisig.params.pubkeys.length * 64,
         };
     }
 

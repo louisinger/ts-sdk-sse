@@ -1,14 +1,15 @@
-import { NetworkName } from "../../networks";
-import { SettleParams, SendBitcoinParams, Outpoint } from "..";
+import { SettleParams, SendBitcoinParams, GetVtxosFilter } from "..";
 
+/**
+ * Request is the namespace that contains the request types for the service worker.
+ */
 export namespace Request {
     export type Type =
         | "INIT_WALLET"
         | "SETTLE"
         | "GET_ADDRESS"
-        | "GET_ADDRESS_INFO"
+        | "GET_BOARDING_ADDRESS"
         | "GET_BALANCE"
-        | "GET_COINS"
         | "GET_VTXOS"
         | "GET_VIRTUAL_COINS"
         | "GET_BOARDING_UTXOS"
@@ -16,7 +17,7 @@ export namespace Request {
         | "GET_TRANSACTION_HISTORY"
         | "GET_STATUS"
         | "CLEAR"
-        | "EXIT";
+        | "SIGN";
 
     export interface Base {
         type: Type;
@@ -33,7 +34,6 @@ export namespace Request {
         type: "INIT_WALLET";
         privateKey: string;
         arkServerUrl: string;
-        network: NetworkName;
         arkServerPublicKey?: string;
     }
 
@@ -44,8 +44,6 @@ export namespace Request {
             typeof message.privateKey === "string" &&
             "arkServerUrl" in message &&
             typeof message.arkServerUrl === "string" &&
-            "network" in message &&
-            typeof message.network === "string" &&
             ("arkServerPublicKey" in message
                 ? typeof message.arkServerPublicKey === "string" ||
                   message.arkServerPublicKey === undefined
@@ -70,12 +68,14 @@ export namespace Request {
         return message.type === "GET_ADDRESS";
     }
 
-    export interface GetAddressInfo extends Base {
-        type: "GET_ADDRESS_INFO";
+    export interface GetBoardingAddress extends Base {
+        type: "GET_BOARDING_ADDRESS";
     }
 
-    export function isGetAddressInfo(message: Base): message is GetAddressInfo {
-        return message.type === "GET_ADDRESS_INFO";
+    export function isGetBoardingAddress(
+        message: Base
+    ): message is GetBoardingAddress {
+        return message.type === "GET_BOARDING_ADDRESS";
     }
 
     export interface GetBalance extends Base {
@@ -86,16 +86,9 @@ export namespace Request {
         return message.type === "GET_BALANCE";
     }
 
-    export interface GetCoins extends Base {
-        type: "GET_COINS";
-    }
-
-    export function isGetCoins(message: Base): message is GetCoins {
-        return message.type === "GET_COINS";
-    }
-
     export interface GetVtxos extends Base {
         type: "GET_VTXOS";
+        filter?: GetVtxosFilter;
     }
 
     export function isGetVtxos(message: Base): message is GetVtxos {
@@ -125,7 +118,6 @@ export namespace Request {
     export interface SendBitcoin extends Base {
         type: "SEND_BITCOIN";
         params: SendBitcoinParams;
-        zeroFee?: boolean;
     }
 
     export function isSendBitcoin(message: Base): message is SendBitcoin {
@@ -163,12 +155,23 @@ export namespace Request {
         type: "CLEAR";
     }
 
-    export interface Exit extends Base {
-        type: "EXIT";
-        outpoints?: Outpoint[];
+    export interface Sign extends Base {
+        type: "SIGN";
+        tx: string;
+        inputIndexes?: number[];
     }
 
-    export function isExit(message: Base): message is Exit {
-        return message.type === "EXIT";
+    export function isSign(message: Base): message is Sign {
+        return (
+            message.type === "SIGN" &&
+            "tx" in message &&
+            typeof message.tx === "string" &&
+            ("inputIndexes" in message
+                ? Array.isArray(message.inputIndexes) &&
+                  message.inputIndexes.every(
+                      (index) => typeof index === "number"
+                  )
+                : true)
+        );
     }
 }

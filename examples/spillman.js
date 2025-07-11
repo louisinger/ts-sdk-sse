@@ -7,20 +7,21 @@
 // Usage:
 // node examples/spillman.js
 //
-const {
-    InMemoryKey,
+import {
+    SingleKey,
     Wallet,
     RestArkProvider,
-    createVirtualTx,
+    RestIndexerProvider,
+    buildOffchainTx,
     VtxoScript,
     MultisigTapscript,
     CLTVMultisigTapscript,
     CSVMultisigTapscript,
     networks,
-} = require("../dist/index.js");
-const { base64, hex } = require("@scure/base");
-const { utils } = require("@scure/btc-signer");
-const { execSync } = require("child_process");
+} from "../dist/esm/index.js";
+import { base64, hex } from "@scure/base";
+import { utils, Transaction } from "@scure/btc-signer";
+import { execSync } from "child_process";
 
 const SERVER_PUBLIC_KEY = hex.decode(
     "8a9bbb1fb2aa92b9557dd0b39a85f31d204f58b41c62ea112d6ad148a9881285"
@@ -28,8 +29,8 @@ const SERVER_PUBLIC_KEY = hex.decode(
 
 const arkdExec = process.argv[2] || "docker exec -t arkd";
 
-const alice = InMemoryKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
-const bob = InMemoryKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
+const alice = SingleKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
+const bob = SingleKey.fromHex(hex.encode(utils.randomPrivateKeyBytes()));
 
 console.log("Creating Spillman Channel between Alice and Bob");
 console.log("Alice's public key:", hex.encode(alice.xOnlyPublicKey()));
@@ -39,14 +40,12 @@ async function main() {
     console.log("\nInitializing Bob's wallet...");
     const bobWallet = await Wallet.create({
         identity: bob,
-        network: "regtest",
         esploraUrl: "http://localhost:3000",
         arkServerUrl: "http://localhost:7070",
     });
 
     const aliceWallet = await Wallet.create({
         identity: alice,
-        network: "regtest",
         esploraUrl: "http://localhost:3000",
         arkServerUrl: "http://localhost:7070",
     });
@@ -69,22 +68,26 @@ async function main() {
     //   this ensures that a unilateralUpdate is always possible before a unilateralRefund.
     //
     const updateScript = MultisigTapscript.encode({
-        pubkeys: [alice.xOnlyPublicKey(), bob.xOnlyPublicKey()],
+        pubkeys: [
+            alice.xOnlyPublicKey(),
+            bob.xOnlyPublicKey(),
+            SERVER_PUBLIC_KEY,
+        ],
     }).script;
 
     const refundScript = CLTVMultisigTapscript.encode({
-        pubkeys: [alice.xOnlyPublicKey()],
+        pubkeys: [alice.xOnlyPublicKey(), SERVER_PUBLIC_KEY],
         absoluteTimelock: BigInt(chainTip + 10),
     }).script;
 
     const unilateralUpdateScript = CSVMultisigTapscript.encode({
         pubkeys: [alice.xOnlyPublicKey(), bob.xOnlyPublicKey()],
-        timelock: { type: "blocks", value: 1n },
+        timelock: { type: "blocks", value: 100n },
     }).script;
 
     const unilateralRefundScript = CSVMultisigTapscript.encode({
         pubkeys: [alice.xOnlyPublicKey()],
-        timelock: { type: "blocks", value: 2n },
+        timelock: { type: "blocks", value: 102n },
     }).script;
 
     const virtualSpillmanChannel = new VtxoScript([
@@ -107,19 +110,23 @@ async function main() {
     // Get the virtual coins for the Spillman Channel address
     console.log("Fetching virtual coins...");
     const arkProvider = new RestArkProvider("http://localhost:7070");
-    const { spendableVtxos } = await arkProvider.getVirtualCoins(address);
+    const indexerProvider = new RestIndexerProvider("http://localhost:7070");
+    const spendableVtxos = await indexerProvider.getVtxos({
+        scripts: [hex.encode(virtualSpillmanChannel.pkScript)],
+        spendableOnly: true,
+    });
 
-    if (spendableVtxos.length === 0) {
+    if (spendableVtxos.vtxos.length === 0) {
         throw new Error("No spendable virtual coins found");
     }
 
-    const vtxo = spendableVtxos[0];
+    const vtxo = spendableVtxos.vtxos[0];
     const input = {
         ...vtxo,
         tapLeafScript: virtualSpillmanChannel.findLeaf(
             hex.encode(updateScript)
         ),
-        scripts: virtualSpillmanChannel.encode(),
+        tapTree: virtualSpillmanChannel.encode(),
     };
 
     console.log("Alice's balance:", vtxo.value, "sats");
@@ -127,51 +134,69 @@ async function main() {
 
     // Bob's receiving address
     const bobAddress = await bobWallet.getAddress();
-    console.log("\nBob's receiving address:", bobAddress.offchain.address);
+    console.log("\nBob's receiving address:", bobAddress);
 
     // Alice's receiving address
     const aliceAddress = await aliceWallet.getAddress();
-    console.log("\nAlice's receiving address:", aliceAddress.offchain.address);
+    console.log("\nAlice's receiving address:", aliceAddress);
 
     // Bob has to keep track of the channel states
     // it means he has to store the list of virtual txs signed by Alice
     const bobChannelStates = [];
 
+    const infos = await arkProvider.getInfo();
+
+    // Create the server unroll script for checkpoint transactions
+    const serverUnrollScript = CSVMultisigTapscript.encode({
+        pubkeys: [SERVER_PUBLIC_KEY],
+        timelock: {
+            type: infos.unilateralExitDelay < 512 ? "blocks" : "seconds",
+            value: infos.unilateralExitDelay,
+        },
+    });
+
     console.log("\nStarting channel updates...");
     // Alice sends 1000 to bob
     console.log("Alice sends 1000 sats to Bob");
-    const tx1 = createVirtualTx(
+    const { arkTx: tx1, checkpoints } = buildOffchainTx(
         [input],
         [
             {
-                address: bobAddress.offchain.address,
                 amount: BigInt(1000),
+                script: virtualSpillmanChannel.pkScript,
             },
             {
-                address: aliceAddress.offchain.address,
                 amount: BigInt(channelCapacity - 1000),
+                script: virtualSpillmanChannel.pkScript,
             },
-        ]
+        ],
+        serverUnrollScript
     );
     const signedTx1 = await alice.sign(tx1);
+    const signedCheckpointsByAlice = await Promise.all(
+        checkpoints.map(async (c) => {
+            return alice.sign(c, [0]);
+        })
+    );
     console.log("Alice signed transaction 1");
     bobChannelStates.push(await bob.sign(signedTx1));
     console.log("Bob signed transaction 1");
 
     // Alice updates the state, sending 500 sats more to Bob
     console.log("\nAlice sends 500 more sats to Bob");
-    const tx2 = createVirtualTx(
+    const { arkTx: tx2 } = buildOffchainTx(
         [input],
         [
             {
-                address: bobAddress.offchain.address,
                 amount: BigInt(1500),
+                script: virtualSpillmanChannel.pkScript,
             },
             {
-                address: aliceAddress.offchain.address,
                 amount: BigInt(channelCapacity - 1500),
+                script: virtualSpillmanChannel.pkScript,
             },
-        ]
+        ],
+        serverUnrollScript
     );
     const signedTx2 = await alice.sign(tx2);
     console.log("Alice signed transaction 2");
@@ -184,11 +209,37 @@ async function main() {
         // to close the channel, Alice or Bob can submit the last virtual tx to the server
         console.log("\nClosing channel...");
         const lastState = bobChannelStates[bobChannelStates.length - 1];
-        const txid = await arkProvider.submitVirtualTx(
-            base64.encode(lastState.toPSBT())
+        const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
+            base64.encode(lastState.toPSBT()),
+            checkpoints.map((c) => base64.encode(c.toPSBT()))
         );
-        console.log("Channel closed successfully!");
-        console.log("Final transaction ID:", txid);
+
+        console.log(
+            "Successfully submitted channel close! Transaction ID:",
+            arkTxid
+        );
+
+        const finalCheckpoints = await Promise.all(
+            signedCheckpointTxs.map(async (c) => {
+                const tx = Transaction.fromPSBT(base64.decode(c), {
+                    allowUnknown: true,
+                });
+                const signedCheckpoint = await bob.sign(tx, [0]);
+                // add alice's signature
+                const aliceCheckpoint =
+                    signedCheckpointsByAlice[signedCheckpointTxs.indexOf(c)];
+                signedCheckpoint.updateInput(0, {
+                    tapScriptSig: [
+                        ...aliceCheckpoint.getInput(0).tapScriptSig,
+                        ...signedCheckpoint.getInput(0).tapScriptSig,
+                    ],
+                });
+                return base64.encode(signedCheckpoint.toPSBT());
+            })
+        );
+
+        await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+        console.log("Successfully finalized channel close!");
 
         console.log("\nFinal Balances:");
         console.log("Alice's final balance:", channelCapacity - 1500, "sats");
@@ -199,11 +250,13 @@ async function main() {
         console.log("Final amount sent to Bob:", 1500, "sats");
         console.log("Number of state updates:", bobChannelStates.length);
     } else {
-        execSync(`nigiri rpc generatetoaddress 11 $(nigiri rpc getnewaddress)`);
+        execSync(
+            `nigiri rpc generatetoaddress 200 $(nigiri rpc getnewaddress)`
+        );
 
         console.log("\nRefunding channel...");
         // after 10 blocks, Alice can spend without Bob's signature
-        const tx = createVirtualTx(
+        const { arkTx, checkpoints } = buildOffchainTx(
             [
                 {
                     ...input,
@@ -214,18 +267,37 @@ async function main() {
             ],
             [
                 {
-                    address: aliceAddress.offchain.address,
                     amount: BigInt(channelCapacity),
+                    script: virtualSpillmanChannel.pkScript,
                 },
-            ]
+            ],
+            serverUnrollScript
         );
-        const signedTx = await alice.sign(tx);
+        const signedTx = await alice.sign(arkTx);
         console.log("Alice signed the refund transaction");
-        const txid = await arkProvider.submitVirtualTx(
-            base64.encode(signedTx.toPSBT())
+
+        const { arkTxid, signedCheckpointTxs } = await arkProvider.submitTx(
+            base64.encode(signedTx.toPSBT()),
+            checkpoints.map((c) => base64.encode(c.toPSBT()))
         );
-        console.log("Channel refunded successfully!");
-        console.log("Final transaction ID:", txid);
+
+        console.log(
+            "Successfully submitted channel refund! Transaction ID:",
+            arkTxid
+        );
+
+        const finalCheckpoints = await Promise.all(
+            signedCheckpointTxs.map(async (c) => {
+                const tx = Transaction.fromPSBT(base64.decode(c), {
+                    allowUnknown: true,
+                });
+                const signedCheckpoint = await alice.sign(tx, [0]);
+                return base64.encode(signedCheckpoint.toPSBT());
+            })
+        );
+
+        await arkProvider.finalizeTx(arkTxid, finalCheckpoints);
+        console.log("Successfully finalized channel refund!");
 
         console.log("\nFinal Balances:");
         console.log("Alice's final balance:", channelCapacity, "sats");

@@ -1,19 +1,143 @@
 import { ArkTransaction, TxType, TxKey, VirtualCoin } from "../wallet";
 
 /**
+ * @param spendable - Vtxos that are spendable
+ * @param spent - Vtxos that are spent
+ * @param boardingBatchTxids - Set of boarding batch txids
+ * @returns Ark transactions
+ */
+export function vtxosToTxs(
+    spendable: VirtualCoin[],
+    spent: VirtualCoin[],
+    boardingBatchTxids: Set<string>
+): ArkTransaction[] {
+    const txs: ArkTransaction[] = [];
+
+    // Receive case
+    // All vtxos are received unless:
+    // - they resulted from a settlement (either boarding or refresh)
+    // - they are the change of a spend tx
+    let vtxosLeftToCheck = [...spent];
+    for (const vtxo of [...spendable, ...spent]) {
+        if (
+            vtxo.virtualStatus.state !== "preconfirmed" &&
+            vtxo.virtualStatus.commitmentTxIds &&
+            vtxo.virtualStatus.commitmentTxIds.some((txid) =>
+                boardingBatchTxids.has(txid)
+            )
+        ) {
+            continue;
+        }
+
+        const settleVtxos = findVtxosSpentInSettlement(vtxosLeftToCheck, vtxo);
+        vtxosLeftToCheck = removeVtxosFromList(vtxosLeftToCheck, settleVtxos);
+        const settleAmount = reduceVtxosAmount(settleVtxos);
+        if (vtxo.value <= settleAmount) {
+            continue; // settlement or change, ignore
+        }
+
+        const spentVtxos = findVtxosSpentInPayment(vtxosLeftToCheck, vtxo);
+        vtxosLeftToCheck = removeVtxosFromList(vtxosLeftToCheck, spentVtxos);
+        const spentAmount = reduceVtxosAmount(spentVtxos);
+        if (vtxo.value <= spentAmount) {
+            continue; // settlement or change, ignore
+        }
+
+        const txKey: TxKey = {
+            commitmentTxid: vtxo.spentBy || "",
+            boardingTxid: "",
+            arkTxid: "",
+        };
+        let settled = vtxo.virtualStatus.state !== "preconfirmed";
+        if (vtxo.virtualStatus.state === "preconfirmed") {
+            txKey.arkTxid = vtxo.txid;
+
+            if (vtxo.spentBy) {
+                settled = true;
+            }
+        }
+
+        txs.push({
+            key: txKey,
+            amount: vtxo.value - settleAmount - spentAmount,
+            type: TxType.TxReceived,
+            createdAt: vtxo.createdAt.getTime(),
+            settled,
+        });
+    }
+
+    // vtxos by settled by or ark txid
+    const vtxosByTxid = new Map<string, VirtualCoin[]>();
+    for (const v of spent) {
+        if (v.settledBy) {
+            if (!vtxosByTxid.has(v.settledBy)) {
+                vtxosByTxid.set(v.settledBy, []);
+            }
+            const currentVtxos = vtxosByTxid.get(v.settledBy)!;
+            vtxosByTxid.set(v.settledBy, [...currentVtxos, v]);
+        }
+
+        if (!v.arkTxId) {
+            continue;
+        }
+
+        if (!vtxosByTxid.has(v.arkTxId)) {
+            vtxosByTxid.set(v.arkTxId, []);
+        }
+        const currentVtxos = vtxosByTxid.get(v.arkTxId)!;
+        vtxosByTxid.set(v.arkTxId, [...currentVtxos, v]);
+    }
+
+    for (const [sb, vtxos] of vtxosByTxid) {
+        const resultedVtxos = findVtxosResultedFromTxid(
+            [...spendable, ...spent],
+            sb
+        );
+        const resultedAmount = reduceVtxosAmount(resultedVtxos);
+        const spentAmount = reduceVtxosAmount(vtxos);
+        if (spentAmount <= resultedAmount) {
+            continue; // settlement or change, ignore
+        }
+
+        const vtxo = getVtxo(resultedVtxos, vtxos);
+
+        const txKey: TxKey = {
+            commitmentTxid: vtxo.virtualStatus.commitmentTxIds?.[0] || "",
+            boardingTxid: "",
+            arkTxid: "",
+        };
+        if (vtxo.virtualStatus.state === "preconfirmed") {
+            txKey.arkTxid = vtxo.txid;
+        }
+
+        txs.push({
+            key: txKey,
+            amount: spentAmount - resultedAmount,
+            type: TxType.TxSent,
+            createdAt: vtxo.createdAt.getTime(),
+            settled: true,
+        });
+    }
+
+    return txs;
+}
+
+/**
  * Helper function to find vtxos that were spent in a settlement
  */
 function findVtxosSpentInSettlement(
     vtxos: VirtualCoin[],
     vtxo: VirtualCoin
 ): VirtualCoin[] {
-    if (vtxo.virtualStatus.state === "pending") {
+    if (vtxo.virtualStatus.state === "preconfirmed") {
         return [];
     }
 
     return vtxos.filter((v) => {
-        if (!v.spentBy) return false;
-        return v.spentBy === vtxo.virtualStatus.batchTxID;
+        if (!v.settledBy) return false;
+        return (
+            vtxo.virtualStatus.commitmentTxIds?.includes(v.settledBy) ?? false
+        );
     });
 }
 
@@ -25,26 +149,26 @@ function findVtxosSpentInPayment(
     vtxo: VirtualCoin
 ): VirtualCoin[] {
     return vtxos.filter((v) => {
-        if (!v.spentBy) return false;
-        return v.spentBy === vtxo.txid;
+        if (!v.arkTxId) return false;
+        return v.arkTxId === vtxo.txid;
     });
 }
 
 /**
  * Helper function to find vtxos that resulted from a spentBy transaction
  */
-function findVtxosResultedFromSpentBy(
+function findVtxosResultedFromTxid(
     vtxos: VirtualCoin[],
-    spentBy: string
+    txid: string
 ): VirtualCoin[] {
     return vtxos.filter((v) => {
         if (
-            v.virtualStatus.state !== "pending" &&
-            v.virtualStatus.batchTxID === spentBy
+            v.virtualStatus.state !== "preconfirmed" &&
+            v.virtualStatus.commitmentTxIds?.includes(txid)
         ) {
             return true;
         }
-        return v.txid === spentBy;
+        return v.txid === txid;
     });
 }
 
@@ -66,113 +190,6 @@ function getVtxo(
         return spentVtxos[0];
     }
     return resultedVtxos[0];
-}
-
-export function vtxosToTxs(
-    spendable: VirtualCoin[],
-    spent: VirtualCoin[],
-    boardingRounds: Set<string>
-): ArkTransaction[] {
-    const txs: ArkTransaction[] = [];
-
-    // Receive case
-    // All vtxos are received unless:
-    // - they resulted from a settlement (either boarding or refresh)
-    // - they are the change of a spend tx
-    let vtxosLeftToCheck = [...spent];
-    for (const vtxo of [...spendable, ...spent]) {
-        if (
-            vtxo.virtualStatus.state !== "pending" &&
-            boardingRounds.has(vtxo.virtualStatus.batchTxID || "")
-        ) {
-            continue;
-        }
-
-        const settleVtxos = findVtxosSpentInSettlement(vtxosLeftToCheck, vtxo);
-        vtxosLeftToCheck = removeVtxosFromList(vtxosLeftToCheck, settleVtxos);
-        const settleAmount = reduceVtxosAmount(settleVtxos);
-        if (vtxo.value <= settleAmount) {
-            continue; // settlement or change, ignore
-        }
-
-        const spentVtxos = findVtxosSpentInPayment(vtxosLeftToCheck, vtxo);
-        vtxosLeftToCheck = removeVtxosFromList(vtxosLeftToCheck, spentVtxos);
-        const spentAmount = reduceVtxosAmount(spentVtxos);
-        if (vtxo.value <= spentAmount) {
-            continue; // settlement or change, ignore
-        }
-
-        const txKey: TxKey = {
-            roundTxid: vtxo.virtualStatus.batchTxID || "",
-            boardingTxid: "",
-            redeemTxid: "",
-        };
-        let settled = vtxo.virtualStatus.state !== "pending";
-        if (vtxo.virtualStatus.state === "pending") {
-            txKey.redeemTxid = vtxo.txid;
-
-            if (vtxo.spentBy) {
-                settled = true;
-            }
-        }
-
-        txs.push({
-            key: txKey,
-            amount: vtxo.value - settleAmount - spentAmount,
-            type: TxType.TxReceived,
-            createdAt: vtxo.createdAt.getTime(),
-            settled,
-        });
-    }
-
-    // send case
-    // All "spentBy" vtxos are payments unless:
-    // - they are settlements
-
-    // aggregate spent by spentId
-    const vtxosBySpentBy = new Map<string, VirtualCoin[]>();
-    for (const v of spent) {
-        if (!v.spentBy) continue;
-
-        if (!vtxosBySpentBy.has(v.spentBy)) {
-            vtxosBySpentBy.set(v.spentBy, []);
-        }
-        const currentVtxos = vtxosBySpentBy.get(v.spentBy)!;
-        vtxosBySpentBy.set(v.spentBy, [...currentVtxos, v]);
-    }
-
-    for (const [sb, vtxos] of vtxosBySpentBy) {
-        const resultedVtxos = findVtxosResultedFromSpentBy(
-            [...spendable, ...spent],
-            sb
-        );
-        const resultedAmount = reduceVtxosAmount(resultedVtxos);
-        const spentAmount = reduceVtxosAmount(vtxos);
-        if (spentAmount <= resultedAmount) {
-            continue; // settlement or change, ignore
-        }
-
-        const vtxo = getVtxo(resultedVtxos, vtxos);
-
-        const txKey: TxKey = {
-            roundTxid: vtxo.virtualStatus.batchTxID || "",
-            boardingTxid: "",
-            redeemTxid: "",
-        };
-        if (vtxo.virtualStatus.state === "pending") {
-            txKey.redeemTxid = vtxo.txid;
-        }
-
-        txs.push({
-            key: txKey,
-            amount: spentAmount - resultedAmount,
-            type: TxType.TxSent,
-            createdAt: vtxo.createdAt.getTime(),
-            settled: true,
-        });
-    }
-
-    return txs;
 }
 
 function removeVtxosFromList(

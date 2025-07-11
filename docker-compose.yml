@@ -1,30 +1,50 @@
 services:
-  arkd:
-    container_name: arkd 
-    build: 
-      context: .
-      dockerfile: server.Dockerfile
-    restart: unless-stopped
-    environment:
-      - ARK_ROUND_INTERVAL=10
-      - ARK_NETWORK=regtest
-      - ARK_LOG_LEVEL=5
-      - ARK_VTXO_TREE_EXPIRY=20
-      - ARK_TX_BUILDER_TYPE=covenantless
-      - ARK_ESPLORA_URL=http://chopsticks:3000
-      - ARK_NEUTRINO_PEER=bitcoin:18444
-      - ARK_SCHEDULER_TYPE=block
-      - ARK_NO_TLS=true
-      - ARK_NO_MACAROONS=true
-      - ARK_DATADIR=/app/data
-      - ARK_ALLOW_ZERO_FEES=true
-    ports:
-      - "7070:7070"
-    volumes:
-      - type: tmpfs
-        target: /app/data
+    arkd-wallet:
+        build:
+            context: .
+            dockerfile: wallet.Dockerfile
+        container_name: arkd-wallet
+        ports:
+            - "6060:6060"
+        environment:
+            - ARKD_WALLET_ESPLORA_URL=http://chopsticks:3000
+            - ARKD_WALLET_NEUTRINO_PEER=bitcoin:18444
+            - ARKD_WALLET_NETWORK=regtest
+        volumes:
+            - type: tmpfs
+              target: /app/data
+    arkd:
+        container_name: arkd
+        depends_on:
+            - arkd-wallet
+        build:
+            context: .
+            dockerfile: server.Dockerfile
+        restart: unless-stopped
+        environment:
+            - ARKD_ROUND_INTERVAL=10
+            - ARKD_NETWORK=regtest
+            - ARKD_LOG_LEVEL=5
+            - ARKD_VTXO_TREE_EXPIRY=20
+            - ARKD_TX_BUILDER_TYPE=covenantless
+            - ARKD_ESPLORA_URL=http://chopsticks:3000
+            - ARKD_NEUTRINO_PEER=bitcoin:18444
+            - ARKD_SCHEDULER_TYPE=block
+            - ARKD_NO_TLS=true
+            - ARKD_NO_MACAROONS=true
+            - ARKD_EVENT_DB_TYPE=badger
+            - ARKD_DB_TYPE=sqlite
+            - ARKD_WALLET_ADDR=arkd-wallet:6060
+            - ARKD_UNILATERAL_EXIT_DELAY=512
+            - ARKD_LIVE_STORE_TYPE=inmemory
+            - ARKD_VTXO_MIN_AMOUNT=1
+        ports:
+            - "7070:7070"
+        volumes:
+            - type: tmpfs
+              target: /app/data
 
 networks:
-  default:
-    name: nigiri
-    external: true
+    default:
+        name: nigiri
+        external: true

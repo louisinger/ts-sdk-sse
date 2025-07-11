@@ -1,6 +1,8 @@
 # Arkade TypeScript SDK
 The Arkade SDK is a TypeScript library for building Bitcoin wallets with support for both on-chain and off-chain transactions via the Ark protocol.
 
+[![TypeScript Documentation](https://img.shields.io/badge/TypeScript-Documentation-blue?style=flat-square)](https://arkade-os.github.io/ts-sdk/)
+
 ## Installation
 
 ```bash
@@ -12,40 +14,84 @@ npm install @arkade-os/sdk
 ### Creating a Wallet
 
 ```typescript
-import { InMemoryKey, Wallet } from '@arkade-os/sdk'
+import { SingleKey, Wallet } from '@arkade-os/sdk'
 
 // Create a new in-memory key (or use an external signer)
-const identity = InMemoryKey.fromHex('your_private_key_hex')
+const identity = SingleKey.fromHex('your_private_key_hex')
 
 // Create a wallet with Ark support
 const wallet = await Wallet.create({
-  network: 'mutinynet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
   identity: identity,
   // Esplora API, can be left empty mempool.space API will be used
   esploraUrl: 'https://mutinynet.com/api', 
-  // OPTIONAL Ark Server connection information
   arkServerUrl: 'https://mutinynet.arkade.sh',
-  arkServerPublicKey: 'fa73c6e4876ffb2dfc961d763cca9abc73d4b88efcb8f5e7ff92dc55e9aa553d'
 })
+```
 
+### Receiving Bitcoin
+
+```typescript
 // Get wallet addresses
-const addresses = await wallet.getAddress()
-console.log('Bitcoin Address:', addresses.onchain)
-console.log('Ark Address:', addresses.offchain)
-console.log('Boarding Address:', addresses.boarding)
-console.log('BIP21 URI:', addresses.bip21)
+const arkAddress = await wallet.getAddress()
+const boardingAddress = await wallet.getBoardingAddress()
+console.log('Ark Address:', arkAddress)
+console.log('Boarding Address:', boardingAddress)
+
+const incomingFunds = await waitForIncomingFunds(wallet)
+if (incomingFunds.type === "vtxo") {
+  // virtual coins received 
+  console.log("VTXOs: ", incomingFunds.vtxos)
+} else if (incomingFunds.type === "utxo") {
+  // boarding coins received
+  console.log("UTXOs: ", incomingFunds.coins)
+}
+```
+
+### Onboarding
+
+Onboarding allows you to swap onchain funds into VTXOs
+
+```typescript
+import { Ramps } from '@arkade-os/sdk'
+
+const onboardTxid = await new Ramps(wallet).onboard();
+```
+
+### Checking Balance
+
+```typescript
+// Get detailed balance information
+const balance = await wallet.getBalance()
+console.log('Total Balance:', balance.total)
+console.log('Boarding Total:', balance.boarding.total)
+console.log('Offchain Available:', balance.available)
+console.log('Offchain Settled:', balance.settled)
+console.log('Offchain Preconfirmed:', balance.preconfirmed)
+console.log('Recoverable:', balance.recoverable)
+
+// Get virtual UTXOs (off-chain)
+const virtualCoins = await wallet.getVtxos()
+
+// Get boarding UTXOs
+const boardingUtxos = await wallet.getBoardingUtxos()
 ```
 
 ### Sending Bitcoin
 
 ```typescript
-// Send bitcoin (automatically chooses on-chain or off-chain based on the address)
+// Send bitcoin via Ark
 const txid = await wallet.sendBitcoin({
   address: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx',
   amount: 50000,  // in satoshis
   feeRate: 1      // optional, in sats/vbyte
 })
+```
 
+### Batch Settlements 
+
+This can be used to move preconfirmed balances into finalized balances, to convert manually UTXOs and VTXOs.
+
+```typescript
 // For settling transactions
 const settleTxid = await wallet.settle({
   inputs, // from getVtxos() or getBoardingUtxos()
@@ -56,20 +102,6 @@ const settleTxid = await wallet.settle({
 })
 ```
 
-### Checking Balance
-
-```typescript
-// Get detailed balance information
-const balance = await wallet.getBalance()
-console.log('Total Onchain:', balance.onchain.total)
-console.log('Total Offchain:', balance.offchain.total)
-
-// Get virtual UTXOs (off-chain)
-const virtualCoins = await wallet.getVtxos()
-
-// Get boarding UTXOs
-const boardingUtxos = await wallet.getBoardingUtxos()
-```
 
 ### Transaction History
 
@@ -80,25 +112,93 @@ console.log('History:', history)
 
 // Example history entry:
 {
+  key: {
+    boardingTxid: '...', // for boarding transactions
+    commitmentTxid: '...', // for commitment transactions
+    redeemTxid: '...'    // for regular transactions
+  },
   type: TxType.TxReceived, // or TxType.TxSent
   amount: 50000,
   settled: true,
-  key: {
-    boardingTxid: '...', // for boarding transactions
-    redeemTxid: '...'    // for regular transactions
-  }
+  createdAt: 1234567890
 }
+```
+
+### Offboarding
+
+Collaborative exit or "offboarding" allows you to withdraw your virtual funds to an onchain address.
+
+```typescript
+import { Ramps } from '@arkade-os/sdk'
+
+const exitTxid = await new Ramps(wallet).offboard(onchainAddress);
 ```
 
 ### Unilateral Exit
 
-```typescript
-// Unilateral exit all vtxos
-await wallet.exit();
+Unilateral exit allows you to withdraw your funds from the Ark protocol back to the Bitcoin blockchain without requiring cooperation from the Ark server. This process involves two main steps:
 
-// Unilateral exit a specific vtxo
-await wallet.exit([{ txid: vtxo.txid, vout: vtxo.vout }]);
+1. **Unrolling**: Broadcasting the transaction chain from off-chain back to on-chain
+2. **Completing the exit**: Spending the unrolled VTXOs after the timelock expires
+
+#### Step 1: Unrolling VTXOs
+
+```typescript
+import { Unroll, OnchainWallet } from '@arkade-os/sdk'
+
+// Create an onchain wallet to pay for P2A outputs in VTXO branches
+// OnchainWallet implements the AnchorBumper interface
+const onchainWallet = new OnchainWallet(wallet.identity, 'regtest');
+
+// Unroll a specific VTXO
+const vtxo = { txid: 'your_vtxo_txid', vout: 0 };
+const session = await Unroll.Session.create(
+  vtxo,
+  onchainWallet,
+  onchainWallet.provider,
+  wallet.indexerProvider
+);
+
+// Iterate through the unrolling steps
+for await (const step of session) {
+  switch (step.type) {
+    case Unroll.StepType.WAIT:
+      console.log(`Waiting for transaction ${step.txid} to be confirmed`);
+      break;
+    case Unroll.StepType.UNROLL:
+      console.log(`Broadcasting transaction ${step.tx.id}`);
+      break;
+    case Unroll.StepType.DONE:
+      console.log(`Unrolling complete for VTXO ${step.vtxoTxid}`);
+      break;
+  }
+}
 ```
+
+The unrolling process works by:
+- Traversing the transaction chain from the root (most recent) to the leaf (oldest)
+- Broadcasting each transaction that isn't already on-chain
+- Waiting for confirmations between steps
+- Using P2A (Pay-to-Anchor) transactions to pay for fees
+
+#### Step 2: Completing the Exit
+
+Once VTXOs are fully unrolled and the unilateral exit timelock has expired, you can complete the exit:
+
+```typescript
+// Complete the exit for specific VTXOs
+await Unroll.completeUnroll(
+  wallet,
+  [vtxo.txid], // Array of VTXO transaction IDs to complete
+  onchainWallet.address // Address to receive the exit amount
+);
+```
+
+**Important Notes:**
+- Each VTXO may require multiple unroll steps depending on the transaction chain length
+- Each unroll step must be confirmed before proceeding to the next
+- The `completeUnroll` method can only be called after VTXOs are fully unrolled and the timelock has expired
+- You need sufficient on-chain funds in the `OnchainWallet` to pay for P2A transaction fees
 
 ### Running the wallet in a service worker
 
@@ -108,7 +208,7 @@ await wallet.exit([{ txid: vtxo.txid, vout: vtxo.vout }]);
 // service-worker.ts
 import { Worker } from '@arkade-os/sdk'
 
-// Worker is a class handling the communication between the main thread and the service worker
+// Worker handles communication between the main thread and service worker
 new Worker().start()
 ```
 
@@ -120,15 +220,13 @@ new Worker().start()
 const serviceWorker = await setupServiceWorker('/service-worker.js')
 const wallet = new ServiceWorkerWallet(serviceWorker)
 
-// initialize the wallet
+// Initialize the wallet
 await wallet.init({
-  network: 'mutinynet',  // 'bitcoin', 'testnet', 'regtest', 'signet' or 'mutinynet'
   privateKey: 'your_private_key_hex',
   // Esplora API, can be left empty mempool.space API will be used
   esploraUrl: 'https://mutinynet.com/api', 
   // OPTIONAL Ark Server connection information
   arkServerUrl: 'https://mutinynet.arkade.sh',
-  arkServerPublicKey: 'fa73c6e4876ffb2dfc961d763cca9abc73d4b88efcb8f5e7ff92dc55e9aa553d'
 })
 
 // check service worker status
@@ -139,140 +237,7 @@ console.log('Service worker status:', status.walletInitialized)
 await wallet.clear()
 ```
 
-## API Reference
-
-### Wallet
-
-#### Constructor Options
-
-```typescript
-interface WalletConfig {
-  /** Network to use ('bitcoin', 'testnet', 'regtest', 'signet', or 'mutinynet') */
-  network: NetworkName;
-  /** Identity for signing transactions */
-  identity: Identity;
-  /** Optional Esplora API URL */
-  esploraUrl?: string;
-  /** Ark server URL (optional) */
-  arkServerUrl?: string;
-  /** Ark server public key (optional) */
-  arkServerPublicKey?: string;
-  /** Optional boarding timelock configuration */
-  boardingTimelock?: RelativeTimelock;
-  /** Optional exit timelock configuration */
-  exitTimelock?: RelativeTimelock;
-}
-```
-
-#### Methods
-
-```typescript
-interface IWallet {
-  /** Get wallet addresses */
-  getAddress(): Promise<{
-    onchain?: Address;
-    offchain?: Address;
-    boarding?: Address;
-    bip21?: string;
-  }>;
-
-  /** Get wallet balance */
-  getBalance(): Promise<{
-    onchain: {
-      total: number;
-      confirmed: number;
-      unconfirmed: number;
-    };
-    offchain: {
-      total: number;
-      settled: number;
-      pending: number;
-      swept: number;
-    };
-    total: number;
-  }>;
-
-  /** Send bitcoin (on-chain or off-chain) */
-  sendBitcoin(params: {
-    address: string;
-    amount: number;
-    feeRate?: number;
-    memo?: string;
-  }, zeroFee?: boolean): Promise<string>;
-
-  /** Get virtual UTXOs */
-  getVtxos(): Promise<VirtualCoin[]>;
-
-  /** Get boarding UTXOs */
-  getBoardingUtxos(): Promise<BoardingUtxo[]>;
-
-  /** Settle transactions */
-  settle(params: {
-    inputs: (VirtualCoin | BoardingUtxo)[];
-    outputs: {
-      address: string;
-      amount: bigint;
-    }[];
-  }): Promise<string>;
-
-  /** Get transaction history */
-  getTransactionHistory(): Promise<Transaction[]>;
-}
-
-/** Transaction types */
-enum TxType {
-  TxSent = 'sent',
-  TxReceived = 'received'
-}
-
-/** Transaction history entry */
-interface Transaction {
-  type: TxType;
-  amount: number;
-  settled: boolean;
-  key: {
-    boardingTxid?: string;
-    redeemTxid?: string;
-  };
-}
-
-/** Virtual coin (off-chain UTXO) */
-interface VirtualCoin {
-  txid: string;
-  value: number;
-  virtualStatus: {
-    state: 'pending' | 'settled';
-  };
-  spentBy?: string;
-  createdAt: Date;
-}
-
-/** Boarding UTXO */
-interface BoardingUtxo {
-  txid: string;
-  vout: number;
-  value: number;
-}
-```
-
-#### Identity
-
-```typescript
-export interface Identity {
-    sign(tx: Transaction, inputIndexes?: number[]): Promise<Transaction>;
-    xOnlyPublicKey(): Uint8Array;
-    signerSession(): SignerSession;
-}
-```
-
-The SDK provides a default implementation of the `Identity` interface: `InMemoryKey` for managing private keys in memory:
-
-```typescript
-class InMemoryKey {
-  static fromPrivateKey(privateKey: Uint8Array): InMemoryKey;
-  static fromHex(privateKeyHex: string): InMemoryKey;
-}
-```
+_For complete API documentation, visit our [TypeScript documentation](https://arkade-os.github.io/ts-sdk/)._
 
 ## Development
 
@@ -291,7 +256,7 @@ pnpm format
 pnpm lint
 ```
 
-2.Install nigiri for integration tests:
+2. Install nigiri for integration tests:
 
 ```bash
 curl https://getnigiri.vulpem.com | bash
@@ -306,10 +271,18 @@ pnpm test
 # Run unit tests only
 pnpm test:unit
 
-# Run integration tests (requires nigiri)
+# Run integration tests with ark provided by nigiri
 nigiri start --ark
-pnpm test:setup      # Run setup script for integration tests
+pnpm test:setup # Run setup script for integration tests
 pnpm test:integration
+nigiri stop --delete
+
+# Run integration tests with ark provided by docker (requires nigiri)
+nigiri start
+pnpm test:up-docker
+pnpm test:setup-docker # Run setup script for integration tests
+pnpm test:integration-docker
+pnpm test:down-docker
 nigiri stop --delete
 
 # Watch mode for development
@@ -317,6 +290,15 @@ pnpm test:watch
 
 # Run tests with coverage
 pnpm test:coverage
+```
+
+### Building the documentation
+
+```bash
+# Build the TS doc
+pnpm docs:build
+# open the docs in the browser
+pnpm docs:open
 ```
 
 ### Releasing
