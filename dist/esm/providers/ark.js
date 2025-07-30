@@ -1,4 +1,7 @@
-import { EventSource } from "eventsource";
+if (globalThis.EventSource === undefined) {
+    const { EventSource } = require("eventsource");
+    globalThis.EventSource = EventSource;
+}
 import { hex } from "@scure/base";
 import { eventSourceIterator } from './utils.js';
 export var SettlementEventType;

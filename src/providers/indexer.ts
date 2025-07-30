@@ -1,6 +1,10 @@
+if (globalThis.EventSource === undefined) {
+    const { EventSource } = require("eventsource");
+    globalThis.EventSource = EventSource;
+}
+
 import { Outpoint, VirtualCoin } from "../wallet";
 import { isFetchTimeoutError } from "./ark";
-import { EventSource } from "eventsource";
 import { eventSourceIterator } from "./utils";
 
 export type PaginationOptions = {

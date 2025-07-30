@@ -2,7 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RestArkProvider = exports.SettlementEventType = void 0;
 exports.isFetchTimeoutError = isFetchTimeoutError;
-const eventsource_1 = require("eventsource");
+if (globalThis.EventSource === undefined) {
+    const { EventSource } = require("eventsource");
+    globalThis.EventSource = EventSource;
+}
 const base_1 = require("@scure/base");
 const utils_1 = require("./utils");
 var SettlementEventType;
@@ -221,7 +224,7 @@ class RestArkProvider {
             : "";
         while (!signal?.aborted) {
             try {
-                const eventSource = new eventsource_1.EventSource(url + queryParams);
+                const eventSource = new EventSource(url + queryParams);
                 // Set up abort handling
                 const abortHandler = () => {
                     eventSource.close();
@@ -267,7 +270,7 @@ class RestArkProvider {
         const url = `${this.serverUrl}/v1/txs`;
         while (!signal?.aborted) {
             try {
-                const eventSource = new eventsource_1.EventSource(url);
+                const eventSource = new EventSource(url);
                 // Set up abort handling
                 const abortHandler = () => {
                     eventSource.close();

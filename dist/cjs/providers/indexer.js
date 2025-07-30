@@ -1,8 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RestIndexerProvider = exports.ChainTxType = exports.IndexerTxType = void 0;
+if (globalThis.EventSource === undefined) {
+    const { EventSource } = require("eventsource");
+    globalThis.EventSource = EventSource;
+}
 const ark_1 = require("./ark");
-const eventsource_1 = require("eventsource");
 const utils_1 = require("./utils");
 var IndexerTxType;
 (function (IndexerTxType) {
@@ -159,7 +162,7 @@ class RestIndexerProvider {
         const url = `${this.serverUrl}/v1/indexer/script/subscription/${subscriptionId}`;
         while (!abortSignal?.aborted) {
             try {
-                const eventSource = new eventsource_1.EventSource(url);
+                const eventSource = new EventSource(url);
                 // Set up abort handling
                 const abortHandler = () => {
                     eventSource.close();
