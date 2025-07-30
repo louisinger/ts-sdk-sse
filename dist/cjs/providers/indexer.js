@@ -1,10 +1,10 @@
 "use strict";
+// if (globalThis.EventSource === undefined) {
+//     const { EventSource } = require("eventsource");
+//     globalThis.EventSource = EventSource;
+// }
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RestIndexerProvider = exports.ChainTxType = exports.IndexerTxType = void 0;
-if (globalThis.EventSource === undefined) {
-    const { EventSource } = require("eventsource");
-    globalThis.EventSource = EventSource;
-}
 const ark_1 = require("./ark");
 const utils_1 = require("./utils");
 var IndexerTxType;

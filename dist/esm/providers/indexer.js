@@ -1,7 +1,7 @@
-if (globalThis.EventSource === undefined) {
-    const { EventSource } = require("eventsource");
-    globalThis.EventSource = EventSource;
-}
+// if (globalThis.EventSource === undefined) {
+//     const { EventSource } = require("eventsource");
+//     globalThis.EventSource = EventSource;
+// }
 import { isFetchTimeoutError } from './ark.js';
 import { eventSourceIterator } from './utils.js';
 export var IndexerTxType;

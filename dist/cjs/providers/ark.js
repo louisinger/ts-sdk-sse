@@ -1,11 +1,11 @@
 "use strict";
+// if (globalThis.EventSource === undefined) {
+//     const { EventSource } = require("eventsource");
+//     globalThis.EventSource = EventSource;
+// }
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RestArkProvider = exports.SettlementEventType = void 0;
 exports.isFetchTimeoutError = isFetchTimeoutError;
-if (globalThis.EventSource === undefined) {
-    const { EventSource } = require("eventsource");
-    globalThis.EventSource = EventSource;
-}
 const base_1 = require("@scure/base");
 const utils_1 = require("./utils");
 var SettlementEventType;

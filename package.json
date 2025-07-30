@@ -59,8 +59,7 @@
     "@noble/secp256k1": "2.2.3",
     "@scure/base": "1.2.6",
     "@scure/btc-signer": "1.8.1",
-    "bip68": "1.0.4",
-    "eventsource": "4.0.0"
+    "bip68": "1.0.4"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

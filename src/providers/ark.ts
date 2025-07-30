@@ -1,7 +1,7 @@
-if (globalThis.EventSource === undefined) {
-    const { EventSource } = require("eventsource");
-    globalThis.EventSource = EventSource;
-}
+// if (globalThis.EventSource === undefined) {
+//     const { EventSource } = require("eventsource");
+//     globalThis.EventSource = EventSource;
+// }
 
 import { TxTreeNode } from "../tree/txTree";
 import { TreeNonces, TreePartialSigs } from "../tree/signingSession";
